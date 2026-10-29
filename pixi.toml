@@ -1,0 +1,28 @@
+[workspace]
+name = "facet2-twobunch-rl-deploy"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# Runtime: what the package imports, plus Jupyter for the notebooks. On the machine the ACR prod
+# environment provides these (unpinned there); here they are locked in pixi.lock. Python 3.12 as in prod.
+[dependencies]
+python = "3.12.*"
+numpy = "*"
+scipy = "*"
+matplotlib = "*"
+pyepics = "*"
+notebook = "*"
+
+[tasks]
+# sha256 of the package source (session.code_sha256); compare with the value check_env() reports on the host
+code-hash = { cmd = "python -c 'from twobunch_deploy import session; print(session.code_sha256())'", env = { PYTHONPATH = "." } }
+
+# Tests only: never imported by the package.
+[feature.test.dependencies]
+pytest = "*"
+
+[feature.test.tasks]
+test = { cmd = "pytest tests", env = { PYTHONPATH = "." } }
+
+[environments]
+default = ["test"]

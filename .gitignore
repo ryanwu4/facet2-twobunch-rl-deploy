@@ -1,0 +1,6 @@
+# session records and frames from the machine (kept on the host, copied back by hand)
+data/
+# pixi environments
+.pixi/
+__pycache__/
+.ipynb_checkpoints/
