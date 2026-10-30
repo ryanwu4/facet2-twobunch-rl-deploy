@@ -90,9 +90,9 @@ def save_record(stage: str, name: str, record: dict) -> Path:
 def pulse_id_steps(pulse_ids: list[int]) -> dict[int, int]:
     """How often each step between consecutive pulse IDs occurs, counted across the wrap.
 
-    36 is the next frame and 72 one frame missed. 0 is a repeated pulse ID: it happened once in the 4,950
-    frames of the TEST_15668 DAQ files, where the IOC gave a frame the next frame's timestamp (so a 72
-    comes just before it).
+    36 is the next frame and 72 one frame missed. The IOC sometimes stamps a frame with a neighbouring
+    pulse ID: in the 33,779 frames of the DAQ runs, two consecutive frames shared an ID 6 times (a 0 step,
+    with a 72 just before it in TEST_15668) and a frame was one pulse early twice (a 35 step, then a 37).
     """
     steps = Counter((b - a) % PULSE_ID_PERIOD for a, b in zip(pulse_ids, pulse_ids[1:]))
     return dict(sorted(steps.items()))

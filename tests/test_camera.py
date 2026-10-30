@@ -24,8 +24,9 @@ needs_daq = pytest.mark.skipif(not (DAQ / FILE).exists(), reason=f"needs the DAQ
 
 
 def test_pulse_id_steps():
-    # the wrap from step 8, then a skip and a repeat as in step 27
-    assert session.pulse_id_steps([130978, 131014, 10, 46, 118, 118, 154]) == {0: 1, 36: 4, 72: 1}
+    # the wrap from TEST_15668 step 8, a frame stamped with the next frame's ID, a frame one pulse early
+    assert session.pulse_id_steps([130978, 131014, 10, 46, 118, 118, 154, 189, 226]) == \
+        {0: 1, 35: 1, 36: 4, 37: 1, 72: 1}
 
 
 @pytest.fixture(scope="module")
