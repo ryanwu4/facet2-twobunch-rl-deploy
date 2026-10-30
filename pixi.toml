@@ -20,6 +20,8 @@ code-hash = { cmd = "python -c 'from twobunch_deploy import session; print(sessi
 # Tests only: never imported by the package.
 [feature.test.dependencies]
 pytest = "*"
+caproto = "*"
+h5py = "*"
 
 [feature.test.tasks]
 test = { cmd = "pytest tests", env = { PYTHONPATH = "." } }
