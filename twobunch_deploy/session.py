@@ -1,4 +1,5 @@
-"""Calls the notebooks make. S0: where and with what a session runs, and saving records under data/."""
+"""Calls the notebooks make. S0: where and with what a session runs, and saving records under data/.
+S1: capture_test() of the camera frames and pulse IDs."""
 from __future__ import annotations
 
 import datetime
@@ -11,6 +12,7 @@ import os
 import platform
 import socket
 import sys
+from collections import Counter
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -22,6 +24,9 @@ DEPENDENCIES = [("numpy", "numpy"), ("scipy", "scipy"), ("matplotlib", "matplotl
 # unset, so check_env reads these before importing anything.
 EPICS_VARS = ["EPICS_CA_ADDR_LIST", "EPICS_CA_AUTO_ADDR_LIST", "EPICS_CA_SERVER_PORT",
               "EPICS_CA_MAX_ARRAY_BYTES", "PYEPICS_LIBCA"]
+# Pulse IDs count the 360 Hz pulses from 0 to 131039, then wrap. At 10 Hz, consecutive frames are 36 apart.
+PULSE_ID_PERIOD = 131040
+PULSE_IDS_PER_FRAME = 36
 
 
 def check_env() -> dict:
@@ -80,3 +85,48 @@ def save_record(stage: str, name: str, record: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=1))
     return path
+
+
+def pulse_id_steps(pulse_ids: list[int]) -> dict[int, int]:
+    """How often each step between consecutive pulse IDs occurs, counted across the wrap.
+
+    36 is the next frame and 72 one frame missed. The IOC sometimes stamps a frame with a neighbouring
+    pulse ID: in the 33,779 frames of the DAQ runs, two consecutive frames shared an ID 6 times (a 0 step,
+    with a 72 just before it in TEST_15668) and a frame was one pulse early twice (a 35 step, then a 37).
+    """
+    steps = Counter((b - a) % PULSE_ID_PERIOD for a, b in zip(pulse_ids, pulse_ids[1:]))
+    return dict(sorted(steps.items()))
+
+
+def capture_test(seconds: float = 30, n_saved: int = 10) -> dict:
+    """S1: capture the DTOTR2 camera for `seconds` and summarise what arrived.
+
+    Saves the summary to data/<date>_S1/capture_test_<HHMMSS>.json and, next to it (.npz), every frame's
+    pulse ID, timestamp and arrival time, plus `n_saved` raw frames spread over the capture.
+    """
+    import numpy as np                  # imported here, so that check_env() runs even without numpy or pyepics
+    from . import machine
+
+    frames = machine.frames(seconds)
+    summary = {"seconds": seconds, "frames": len(frames)}
+    if frames:
+        steps = pulse_id_steps([f.pulse_id for f in frames])
+        expected = sum(s * n for s, n in steps.items()) // PULSE_IDS_PER_FRAME + 1
+        latency = [f.received - f.timestamp for f in frames]
+        summary.update({
+            "capture_fraction": len(frames) / expected,
+            "pulse_id_steps": steps,
+            "latency_s": {"first": latency[0], "median": float(np.median(latency)), "max": max(latency)},
+            "dtype": str(frames[0].data.dtype),
+            "lengths": sorted({f.data.size for f in frames}),
+            "min": int(min(f.data.min() for f in frames)),
+            "max": int(max(f.data.max() for f in frames)),
+        })
+    path = save_record("S1", "capture_test", summary)
+    if frames:
+        saved = frames[::max(1, len(frames) // n_saved)][:n_saved]
+        np.savez_compressed(path.with_suffix(".npz"), pulse_id=[f.pulse_id for f in frames],
+                            timestamp=[f.timestamp for f in frames], received=[f.received for f in frames],
+                            saved_pulse_id=[f.pulse_id for f in saved],
+                            saved_data=np.stack([f.data for f in saved]))
+    return summary

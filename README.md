@@ -42,6 +42,8 @@ pixi run test        # all tests
 pixi run code-hash   # sha256 of the package source
 ```
 
+The camera tests run the package's Channel Access calls against a soft IOC (`tests/soft_ioc.py`, caproto) that serves real DAQ frames under the camera's PV name, on 127.0.0.1 only. The DAQ files are not in this repo, so these tests run only where they are (`DTOTR2_DAQ`, the TEST_15668 `images/DTOTR2` directory) and are skipped in CI. The first Channel Access call starts EPICS's standard `caRepeater` helper process, which keeps running afterwards.
+
 ## On the machine
 
 Uses the ACR production Python environment as it is; nothing is installed. Get the stage's branch onto the host, then from the repo root start Jupyter inside tmux so it survives the SSH tunnel dropping:
