@@ -3,14 +3,16 @@ name = "facet2-twobunch-rl-deploy"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
-# Runtime: what the package imports, plus Jupyter for the notebooks. On the machine the ACR prod
-# environment provides these (unpinned there); here they are locked in pixi.lock. Python 3.12 as in prod.
+# Runtime: what the package imports, plus Jupyter for the notebooks. Pinned to the versions in the prod
+# environment on facet-srv01 (S0 check_env, 2026-10-30), so the tests run what the machine runs. epics-base
+# provides the Channel Access library; the host loads the site's own build of the same version (R7.0.3.1).
 [dependencies]
-python = "3.12.*"
-numpy = "*"
-scipy = "*"
-matplotlib = "*"
-pyepics = "*"
+python = "==3.12.11"
+numpy = "==2.4.6"
+scipy = "==1.16.0"
+matplotlib = "==3.10.3"
+pyepics = "==3.5.8"
+epics-base = "==7.0.3.1"
 notebook = "*"
 
 [tasks]
