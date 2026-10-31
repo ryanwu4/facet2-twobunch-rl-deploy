@@ -1,5 +1,6 @@
 """Calls the notebooks make. S0: where and with what a session runs, and saving records under data/.
-S1: capture_test() of the camera frames and pulse IDs."""
+S1: capture_test() of the camera frames and pulse IDs. S2: geometry_test() of the camera settings and the
+hand crop."""
 from __future__ import annotations
 
 import datetime
@@ -129,4 +130,30 @@ def capture_test(seconds: float = 30, n_saved: int = 10) -> dict:
                             timestamp=[f.timestamp for f in frames], received=[f.received for f in frames],
                             saved_pulse_id=[f.pulse_id for f in saved],
                             saved_data=np.stack([f.data for f in saved]))
+    return summary
+
+
+def geometry_test(seconds: float = 3) -> dict:
+    """S2: the camera settings, then the hand crop of every frame captured for `seconds` (screen.trained_frame).
+
+    Saves the summary to data/<date>_S2/geometry_test_<HHMMSS>.json and, next to it, every frame's pulse ID,
+    the newest raw frame and every frame's hand crop (.npz), and viz.geometry's figure of the newest frame
+    (.png).
+    """
+    import numpy as np                  # imported here, so that check_env() runs even without them
+    from . import machine, screen, viz
+
+    camera = machine.camera_settings()
+    frames = machine.frames(seconds)
+    if not frames:
+        raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
+    trained = np.stack([screen.trained_frame(f.data, camera) for f in frames])
+    summary = {"camera": camera, "trained": screen.TRAINED,
+               "differs": [k for k in screen.TRAINED if camera[k] != screen.TRAINED[k]],
+               "frames": len(frames), "trained_shape": list(trained.shape[1:])}
+    path = save_record("S2", "geometry_test", summary)
+    np.savez_compressed(path.with_suffix(".npz"), pulse_id=[f.pulse_id for f in frames], raw=frames[-1].data,
+                        trained=trained)
+    fig = viz.geometry(frames[-1].data, camera, f"DTOTR2, pulse ID {frames[-1].pulse_id}")
+    fig.savefig(path.with_suffix(".png"))
     return summary
