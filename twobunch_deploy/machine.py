@@ -1,9 +1,8 @@
 """Channel Access reads through pyepics. v1 is read-only: this module only ever reads.
 
 S1  frames(): every DTOTR2 frame published during a capture, with its pulse ID
-Planned:
-  S2  frame geometry: reshape and orient like the DAQ images
-  S4  get(name): one scalar PV; refuses names not in pvs.READ
+S2  get(): one read of a scalar PV in pvs.READ; camera_settings(): the DTOTR2 camera's ROI, orientation, exposure,
+    gain, pixel size, and where its array comes from and its size
 """
 from __future__ import annotations
 
@@ -41,3 +40,28 @@ def frames(seconds: float) -> list[Frame]:
     time.sleep(seconds)
     pv.disconnect()
     return got
+
+
+def get(name: str, as_string: bool = False):
+    """One read of a scalar PV, without subscribing. Raises ValueError if the name isn't in pvs.READ, so
+    only reviewed PVs are read, and TimeoutError if the PV doesn't answer within 2 s.
+
+    as_string gives an enum's label (e.g. "Positive") instead of its index.
+    """
+    if name not in pvs.READ:
+        raise ValueError(f"{name} is not in pvs.READ")
+    pv = epics.PV(name, auto_monitor=False)
+    value = pv.get(timeout=2, as_string=as_string)
+    pv.disconnect()
+    if value is None:
+        raise TimeoutError(f"no answer from {name}")
+    return value
+
+
+def camera_settings() -> dict:
+    """The DTOTR2 camera readbacks in pvs.CAMERA_SETTINGS, keyed by PV suffix (e.g. "MinX_RBV").
+
+    The orientations and reverses are enums, read as their labels ("Positive", "No").
+    """
+    enums = ("_ORIENT", "ReverseX_RBV", "ReverseY_RBV")
+    return {name.rsplit(":", 1)[1]: get(name, as_string=name.endswith(enums)) for name in pvs.CAMERA_SETTINGS}
