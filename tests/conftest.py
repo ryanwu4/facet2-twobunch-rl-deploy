@@ -1,7 +1,8 @@
-"""The soft IOC the Channel Access tests share (S1, S2).
+"""The soft IOC the Channel Access tests share (S1, S2, S3), and the code and data the comparisons use.
 
-It serves real DAQ frames, which are not in this public repo, so these tests run only where the TEST_15668
-DTOTR2 files are (DTOTR2_DAQ, default next to this repo) and are skipped in CI.
+The soft IOC serves real DAQ frames, which are not in this public repo, so these tests run only where the
+TEST_15668 DTOTR2 files are (DTOTR2_DAQ, default next to this repo) and are skipped in CI. So are the comparisons
+with Yiheng Ye's DAQ classes and with twobunch-s2e-rl's online/features.py, which need those next to this repo.
 """
 import os
 import socket
@@ -10,7 +11,9 @@ import sys
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pytest
+from PIL import Image
 
 from twobunch_deploy import screen
 
@@ -19,6 +22,11 @@ DAQ = Path(os.environ.get("DTOTR2_DAQ", REPO.parent / "XTCAV_analysis/TEST_15668
 # 30 frames of step 8; the pulse ID wraps after the 11th
 FILE, FIRST, LAST = "DTOTR2_data_step08.h5", 20, 50
 needs_daq = pytest.mark.skipif(not (DAQ / FILE).exists(), reason=f"needs the DAQ file {DAQ / FILE}")
+XTCAV = REPO.parent / "XTCAV_analysis"
+YIHENG = XTCAV / "yiheng/DAQ_analysis_class"
+needs_yiheng = pytest.mark.skipif(not (YIHENG / "image.py").exists(), reason=f"needs Yiheng's code in {YIHENG}")
+FEATURES = REPO.parent / "twobunch-s2e-rl/src/twobunch_s2e_rl/online/features.py"
+needs_features = pytest.mark.skipif(not FEATURES.exists(), reason=f"needs {FEATURES}")
 
 
 def camera(min_x, min_y, size_x, size_y, **changes):
@@ -32,6 +40,12 @@ def camera(min_x, min_y, size_x, size_y, **changes):
 # the soft IOC's modes: the camera at the trained ROI (as in the DAQ runs), at the full sensor (as for S1 on
 # 2026-10-30) and at the ROI read on srv01 on 2026-10-30 15:26, which misses the trained ROI's bottom rows
 MODES = {"roi": camera(396, 70, 184, 894), "full": camera(0, 0, 1292, 964), "srv01": camera(346, 38, 324, 860)}
+
+
+def pil_crop(frame):
+    """A DAQ frame at the trained ROI, oriented (TEST_15668's: a transpose) and hand-cropped by PIL, as the
+    DAQ classes do."""
+    return np.array(Image.fromarray(np.ascontiguousarray(frame.T)).crop(screen.HAND_CROP))
 
 
 def daq():
