@@ -1,18 +1,18 @@
 """Image processing: the region of the camera the analysis uses, oriented and cropped like the DAQ images (S2);
-the background, noise processing, energy cut and band statistics of one frame (S3).
+the background, noise processing, energy cut and band statistics of one frame (S3); the row correction, the step's
+energy cut and the step reading (S5).
 
-Planned (S5): off-shot row correction, the step's energy cut and the step reading.
-
-S3 re-implements the parts of Yiheng Ye's XTCAV analysis (xtcav.py: preprocess_shot, process_noisy_image) and of
-twobunch-s2e-rl's online/features.py (valley_threshold, band_stats) that the deployed analysis uses. Tests check
-them against both on DAQ frames.
+S3 and S5 re-implement the parts of Yiheng Ye's XTCAV analysis (xtcav.py: preprocess_shot, process_noisy_image,
+the row correction) and of twobunch-s2e-rl's online/features.py (valley_threshold, band_stats, step_cut,
+step_features) that the deployed analysis uses (scripts/xtcav_online_replay.py, v7 settings). Tests check them
+against both on DAQ frames, and the step readings against the v7 replay.
 """
 from __future__ import annotations
 
 from typing import NamedTuple
 
 import numpy as np
-from scipy import ndimage, signal
+from scipy import constants, ndimage, optimize, signal
 
 # DTOTR2 camera settings in the DAQ runs the deployed analysis was built on (TEST_15668, E300_15671,
 # E300_15673; metadata.DTOTR2 of each run). Keys are the PV suffixes, as in pvs.CAMERA_SETTINGS.
@@ -35,6 +35,18 @@ THRESHOLD = 35      # counts: then pixels below this are set to 0
 # The training's band statistics (online/features.py)
 EDGE_BAND = 0.3e-3  # m: intensity this close to the crop's x edges counts in the edge fraction
 SENS_ROWS = 2       # rows: the cut-sensitivity offsets move the cut by this much
+
+# The row correction (xtcav.py's build_off_reference, fit_row_distortion, compute_distortion_shifts, apply_row_shift)
+ROW_SIGNAL = 0.005  # a row of the off reference is fitted if it holds more than this fraction of its intensity
+
+# The step reading (online/features.py's step_cut and step_features, with xtcav_online_replay.py's settings)
+MIN_FRAMES = 15                 # kept frames with band statistics per polarity (the policy was trained on 30)
+SPACING_FLOOR = 60e-6           # m: a valid reading's |spacing| is above this
+EDGE_MAX = 0.01                 # a valid reading's edge fraction is below this
+MIN_INTENSITY = 1e5             # counts: a valid reading's kept frames of each polarity have a median summed
+                                # intensity of at least this: beam on the screen (beam frames 5-9e5; without beam,
+                                # a pedestal leaves about 200 counts of noise, in which the valley rule finds cuts)
+UM_PER_DEG_RF = constants.c / 11.424e9 / 360 * 1e6     # um of z per degree of the X-band TCAV's phase
 
 
 def trained_frame(data: np.ndarray, camera: dict) -> np.ndarray:
@@ -178,3 +190,142 @@ def band_stats(image: np.ndarray, x: np.ndarray, cut: int) -> dict | None:
         out[key] = (float(np.average(x, weights=d) - np.average(x, weights=w))
                     if d.sum() > 0 and w.sum() > 0 else float("nan"))
     return out
+
+
+class Reference(NamedTuple):
+    image: np.ndarray       # the mean of the step's processed off frames
+    centroids: np.ndarray   # each row's fitted x centroid (column); nan where the row isn't fitted
+    shifts: np.ndarray      # columns each row is shifted by (shift_rows)
+
+
+def gaussian(x, centre, height, sigma, offset):
+    """The Gaussian fitted to each row of the off reference (Yiheng's analysis.fit_gaussian)."""
+    return height * np.exp(-0.5 * ((x - centre) / sigma) ** 2) + offset
+
+
+def row_reference(off: list[np.ndarray]) -> Reference | None:
+    """The row-correction reference from a step's processed TCAV-off frames. Their mean; a Gaussian fitted in x to
+    each row of it holding more than ROW_SIGNAL of its intensity, whose centre in the crop is the row's centroid;
+    and each row's shift, which moves its centroid to the crop's centre column. A row not fitted takes the centroid
+    interpolated linearly from the fitted rows, or the nearest fitted row's past either end. None if no row is fitted.
+
+    Re-implements xtcav.py's build_off_reference, fit_row_distortion and compute_distortion_shifts with their defaults
+    (the shift is relative to the column where the mean's x projection peaks, plus the shift that centres that
+    column: the peak column cancels out).
+    """
+    image = np.mean(off, axis=0)
+    width = image.shape[1]
+    columns = np.arange(width, dtype=float)
+    centroids = np.full(image.shape[0], np.nan)
+    for row, line in enumerate(image):
+        if not line.sum() > ROW_SIGNAL * image.sum():
+            continue
+        p0 = (float(np.argmax(line)), float(np.max(line)), width / 10, float(np.median(line)))
+        try:
+            centre = optimize.curve_fit(gaussian, columns, line, p0=p0, maxfev=1000)[0][0]
+        except RuntimeError:                        # the fit didn't converge
+            continue
+        if 0 < centre < width:
+            centroids[row] = centre
+    fitted = np.flatnonzero(np.isfinite(centroids))
+    if len(fitted) == 0:
+        return None
+    filled = np.interp(np.arange(len(centroids)), fitted, centroids[fitted])
+    return Reference(image, centroids, (width - 1) / 2 - filled)
+
+
+def shift_rows(image: np.ndarray, shifts: np.ndarray) -> np.ndarray:
+    """Each row of `image` shifted right by its `shifts` (columns; fractional shifts interpolate linearly), with 0
+    where columns come in from outside the image (xtcav.apply_row_shift)."""
+    rows, columns = np.indices(image.shape)
+    return ndimage.map_coordinates(image.astype(float), [rows, columns - shifts[:, None]], order=1, mode="constant",
+                                   cval=0.0)
+
+
+def step_cut(plus: list[np.ndarray]) -> int | None:
+    """The step's energy cut, for its +V and -V frames, from its +V frames (processed, row-corrected): the median of
+    the frames' own valley cuts, rounded; None if fewer than half of them have one (online/features.step_cut). A -V
+    frame's own valley can lock onto another dip: the TCAV's energy kick changes sign with the polarity."""
+    cuts = [c for c in (valley(frame.sum(axis=1)).cut for frame in plus) if c is not None]
+    if not cuts or 2 * len(cuts) < len(plus):
+        return None
+    return int(round(float(np.median(cuts))))
+
+
+def reading(plus: list[dict], minus: list[dict], streak_um_per_deg: float) -> dict:
+    """The step reading from the band statistics of its kept +V and -V frames (online/features.step_features). Each
+    statistic's median per polarity gives:
+    - spacing: the drive-witness offsets' half-difference, (x_d - x_w at +V minus at -V) / 2 S;
+    - drive_sigma_z: the square root of the mean of the two drive x variances, over |S| (screen resolution included);
+    - drive_charge_fraction: the mean of the two;
+    - edge_frac: the larger of the two;
+    - cut_sens: half the change in spacing between the cut SENS_ROWS rows higher and lower.
+    The streak S, screen m per m of z, is the calibration `streak_um_per_deg` (at the pixel size of x) over
+    UM_PER_DEG_RF; +V streaks by +S and -V by -S. Lengths in m.
+    """
+    streak = streak_um_per_deg / UM_PER_DEG_RF
+
+    def median(stats, key):
+        return float(np.median([s[key] for s in stats]))
+
+    offset_plus = float(np.median([s["x_d"] - s["x_w"] for s in plus]))
+    offset_minus = float(np.median([s["x_d"] - s["x_w"] for s in minus]))
+    hi = (median(plus, "off_cut_hi") - median(minus, "off_cut_hi")) / (2 * streak)
+    lo = (median(plus, "off_cut_lo") - median(minus, "off_cut_lo")) / (2 * streak)
+    return {"spacing": (offset_plus - offset_minus) / (2 * streak),
+            "drive_sigma_z": float(np.sqrt(0.5 * (median(plus, "var_d") + median(minus, "var_d")))) / abs(streak),
+            "drive_charge_fraction": 0.5 * (median(plus, "frac_d") + median(minus, "frac_d")),
+            "edge_frac": max(median(plus, "edge_frac"), median(minus, "edge_frac")),
+            "cut_sens": 0.5 * abs(hi - lo)}
+
+
+class StepReading(NamedTuple):
+    reference: Reference | None     # from the step's off frames; None if it has none, or no row could be fitted
+    cut: int | None                 # the step's energy cut (step_cut)
+    stats: list                     # each + and - frame's band_stats at the cut (dropped ones too); None for the rest
+    intensity: list                 # each + and - frame's summed intensity (processed, corrected); None for the rest
+    medians: dict                   # "+" and "-": the median of the polarity's kept frames, processed and corrected
+    reading: dict | None            # reading() of the kept frames; None unless both polarities have one with stats
+    checks: dict                    # what a valid reading needs, each True or False
+
+
+def read_step(crops: np.ndarray, tags: np.ndarray, drop: np.ndarray, background: np.ndarray, x: np.ndarray,
+              streak_um_per_deg: float) -> StepReading:
+    """One step's reading from its frames, as the deployed analysis reads a DAQ step (xtcav_online_replay.py, v7):
+    1. process each +, - and off frame (process);
+    2. the row-correction reference from the off frames (row_reference), and each + and - frame's rows shifted by it;
+    3. the step's cut from the kept + frames (step_cut), and each + and - frame's band statistics at that cut;
+    4. the reading from the kept frames with statistics (reading).
+    The reading is valid if all its checks pass: at least MIN_FRAMES such frames per polarity, a reference, a cut,
+    |spacing| above SPACING_FLOOR and the edge fraction below EDGE_MAX (these two v7's own rule), and beam: each
+    polarity's kept frames have a median summed intensity of at least MIN_INTENSITY. Without a reference the + and -
+    frames are read uncorrected, and the reading is invalid.
+
+    `crops` are the hand crops, `tags` and `drop` from acquire, `x` each column's x (m, x_positions) and
+    `streak_um_per_deg` the TCAV calibration at x's pixel size.
+    """
+    off = [process(crop, background) for crop, t in zip(crops, tags) if t == "off"]
+    reference = row_reference(off) if off else None
+    frames = {}                                     # frame index -> processed, corrected + or - frame
+    for i, (crop, t) in enumerate(zip(crops, tags)):
+        if t in ("+", "-"):
+            processed = process(crop, background)
+            frames[i] = processed if reference is None else shift_rows(processed, reference.shifts)
+    kept = {sign: [i for i in frames if tags[i] == sign and not drop[i]] for sign in ("+", "-")}
+    cut = step_cut([frames[i] for i in kept["+"]])
+    stats = [band_stats(frames[i], x, cut) if i in frames and cut is not None else None for i in range(len(tags))]
+    good = {sign: [stats[i] for i in kept[sign] if stats[i] is not None] for sign in ("+", "-")}
+    result = reading(good["+"], good["-"], streak_um_per_deg) if good["+"] and good["-"] else None
+    intensity = [float(frames[i].sum()) if i in frames else None for i in range(len(tags))]
+    checks = {f"+ frames >= {MIN_FRAMES}": len(good["+"]) >= MIN_FRAMES,
+              f"- frames >= {MIN_FRAMES}": len(good["-"]) >= MIN_FRAMES,
+              "row-correction reference": reference is not None,
+              "step cut": cut is not None,
+              f"|spacing| > {1e6 * SPACING_FLOOR:.0f} um":
+                  result is not None and abs(result["spacing"]) > SPACING_FLOOR,
+              f"edge fraction < {EDGE_MAX}": result is not None and result["edge_frac"] < EDGE_MAX,
+              f"beam: median intensity >= {MIN_INTENSITY:.0e}":
+                  all(kept[sign] and np.median([intensity[i] for i in kept[sign]]) >= MIN_INTENSITY
+                      for sign in ("+", "-"))}
+    medians = {sign: np.median([frames[i] for i in kept[sign]], axis=0) for sign in kept if kept[sign]}
+    return StepReading(reference, cut, stats, intensity, medians, result, checks)

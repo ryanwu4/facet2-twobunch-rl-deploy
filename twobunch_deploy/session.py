@@ -1,6 +1,7 @@
 """Calls the notebooks make. S0: where and with what a session runs, and saving records under data/.
 S1: capture_test() of the camera frames and pulse IDs. S2: geometry_test() of the camera settings and the
-hand crop. S3: backgrounds (take_background, pedestal, load_background), peek() and processing_test()."""
+hand crop. S3: backgrounds (take_background, pedestal, load_background), peek() and processing_test().
+S4: tcav_test() of the TCAV readbacks and tags; peek() shows the newest frame's tag. S5: step()."""
 from __future__ import annotations
 
 import datetime
@@ -30,6 +31,7 @@ EPICS_VARS = ["EPICS_CA_ADDR_LIST", "EPICS_CA_AUTO_ADDR_LIST", "EPICS_CA_SERVER_
 # Pulse IDs count the 360 Hz pulses from 0 to 131039, then wrap. At 10 Hz, consecutive frames are 36 apart.
 PULSE_ID_PERIOD = 131040
 PULSE_IDS_PER_FRAME = 36
+PULSES_PER_SECOND = 360
 
 
 def check_env() -> dict:
@@ -242,29 +244,38 @@ def load_background(path: str | Path) -> Background:
 
 
 def peek(background: Background, seconds: float = 0.5) -> dict:
-    """S3: the newest frame through the processing, drawn with its energy cut and band statistics (viz.peek).
+    """S3: the newest frame through the processing, drawn with its energy cut and band statistics (viz.peek). S4:
+    with its TCAV tag and readbacks.
 
-    Captures for `seconds` and takes the last frame. The cut is the frame's own valley: S4 adds the TCAV
-    polarity and S5 the step's cut. Saves the summary to data/<date>_S3/peek_<HHMMSS>.json and, next to it, the
-    raw frame and its hand crop (.npz) and the figure (.png).
+    Captures for `seconds` with the TCAV readbacks (acquire.capture) and takes the last frame. The cut is the frame's
+    own valley and the frame is not row-corrected: one frame has neither a step cut nor an off reference (step()
+    has both). Saves the summary to data/<date>_S3/peek_<HHMMSS>.json and, next to it, the raw frame and its hand
+    crop (.npz) and the figure (.png).
     """
     import numpy as np
-    from . import screen, viz
+    from . import acquire, screen, viz
 
-    camera, frames, crops = hand_crops(seconds)
-    frame, crop = frames[-1], crops[-1]
+    capture = acquire.capture(seconds)
+    if not capture.frames:
+        raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
+    frame, camera = capture.frames[-1], capture.camera
+    crop = screen.trained_frame(frame.data, camera)
     start = time.perf_counter()
     processed = screen.process(crop, background.image)
     valley = screen.valley(processed.sum(axis=1))
     x = screen.x_positions(camera["RESOLUTION"])
     stats = None if valley.cut is None else screen.band_stats(processed, x, valley.cut)
     processing_s = time.perf_counter() - start
-    summary = {"pulse_id": frame.pulse_id, "age_s": frame.received - frame.timestamp, "frames": len(frames),
+    amplitude, phase = float(capture.amplitude[-1]), float(capture.phase[-1])
+    summary = {"pulse_id": frame.pulse_id, "age_s": frame.received - frame.timestamp, "frames": len(capture.frames),
+               "tcav": {"tag": str(capture.tags[-1]), "amplitude": None if np.isnan(amplitude) else amplitude,
+                        "phase": None if np.isnan(phase) else phase},
                "background": background.path, "camera": camera, "processing_s": processing_s,
                "intensity": float(processed.sum()), "band_stats": stats}
     path = save_record("S3", "peek", summary)
     np.savez_compressed(path.with_suffix(".npz"), raw=frame.data, crop=crop)
-    title = (f"DTOTR2, pulse ID {frame.pulse_id}, {summary['age_s']:.2f} s old; "
+    title = (f"DTOTR2, pulse ID {frame.pulse_id}, {summary['age_s']:.2f} s old; TCAV {capture.tags[-1]} "
+             f"(A {amplitude:.2f} MV, P {phase:.2f} deg); own valley, no row correction\n"
              + ("no valley: no cut" if stats is None else
                 f"x_d - x_w {1e3 * (stats['x_d'] - stats['x_w']):.3f} mm, drive fraction {stats['frac_d']:.3f}, "
                 f"edge fraction {stats['edge_frac']:.4f}"))
@@ -310,3 +321,129 @@ def processing_test(backgrounds: list[Background], seconds: float = 10) -> dict:
     np.savez_compressed(path.with_suffix(".npz"), pulse_id=[f.pulse_id for f in frames],
                         crops=np.stack([screen.trained_frame(f.data, camera) for f in frames]))
     return summary
+
+
+def tcav_test(seconds: float = 10) -> dict:
+    """S4: capture for `seconds` with the TCAV amplitude and phase readbacks (acquire.capture) and summarise how they
+    arrive, in whatever state the TCAV is: each PV's number of updates and the pulse-ID steps between them; the
+    fraction of frames with both readbacks of their pulse; the tags and the frames dropped; each readback's minimum,
+    median and maximum per tag.
+
+    Saves the summary to data/<date>_S4/tcav_test_<HHMMSS>.json and, next to it (.npz), every frame's pulse ID,
+    timestamp, readbacks, tag and drop, and every update.
+    """
+    import numpy as np
+    from . import acquire, pvs
+
+    capture = acquire.capture(seconds)
+    if not capture.frames:
+        raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
+    summary = {"seconds": seconds, "frames": len(capture.frames), "updates": {}}
+    for name in (pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE):
+        pulse_ids = [u.pulse_id for u in capture.updates if u.name == name]
+        summary["updates"][name] = {"count": len(pulse_ids), "pulse_id_steps": pulse_id_steps(pulse_ids)}
+    matched = ~(np.isnan(capture.amplitude) | np.isnan(capture.phase))
+    summary.update({"matched_fraction": float(matched.mean()), "tags": dict(Counter(capture.tags)),
+                    "dropped": int(capture.drop.sum()), "range": {}})
+    for t in summary["tags"]:
+        if t != "unmatched":
+            summary["range"][t] = {k: [float(f(v[capture.tags == t])) for f in (np.min, np.median, np.max)]
+                                   for k, v in (("amplitude", capture.amplitude), ("phase", capture.phase))}
+    path = save_record("S4", "tcav_test", summary)
+    np.savez_compressed(path.with_suffix(".npz"), **frame_arrays(capture))
+    return summary
+
+
+def frame_arrays(capture) -> dict:
+    """A capture's per-frame and per-update arrays, for an .npz."""
+    import numpy as np
+
+    return {"pulse_id": [f.pulse_id for f in capture.frames], "timestamp": [f.timestamp for f in capture.frames],
+            "amplitude": capture.amplitude, "phase": capture.phase, "tag": capture.tags.astype(str),
+            "drop": capture.drop, "update_name": [u.name for u in capture.updates],
+            "update_pulse_id": [u.pulse_id for u in capture.updates],
+            "update_timestamp": [u.timestamp for u in capture.updates],
+            "update_value": [u.value for u in capture.updates]}
+
+
+class Reading(NamedTuple):
+    """A step()'s reading: its record (saved as JSON at `path`) and each polarity's median frame, for show()."""
+    record: dict
+    path: str
+    medians: dict
+
+    def show(self) -> None:
+        """Draw the step (viz.step) and save the figure next to its record (.png)."""
+        from . import viz
+
+        viz.step(self.record, self.medians).savefig(Path(self.path).with_suffix(".png"))
+
+
+def step(background: Background, streak_um_per_deg: float, seconds: float = 15, drop_s: float = 1.0) -> Reading:
+    """S5: one measurement step. Captures for `seconds` with the TCAV readbacks (acquire.capture: each frame tagged,
+    and the + and - frames less than `drop_s` after their polarity window began dropped), then reads the frames as
+    the deployed analysis does (screen.read_step) with `background` and the TCAV calibration `streak_um_per_deg`.
+    The calibration is in um on the screen per degree at the live pixel size (RESOLUTION): one measured at another
+    pixel size must be rescaled first.
+
+    Without both polarities, an off frame or a cut the reading is invalid (its checks say which), but everything the
+    frames allow is still computed and recorded. Saves data/<date>_S5/step_<HHMMSS>.json (the reading and its checks,
+    counts, the reference fit, timing, peak memory, and each frame's pulse ID, readbacks, tag, drop, intensity and
+    band statistics) and .npz (every frame's hand crop with the same, the reference and the two median frames).
+    """
+    import resource
+    import numpy as np
+    from . import acquire, screen
+
+    start = time.perf_counter()
+    capture = acquire.capture(seconds, drop_s)
+    if not capture.frames:
+        raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
+    captured = time.perf_counter()
+    crops = np.stack([screen.trained_frame(f.data, capture.camera) for f in capture.frames])
+    x = screen.x_positions(capture.camera["RESOLUTION"])
+    read = screen.read_step(crops, capture.tags, capture.drop, background.image, x, streak_um_per_deg)
+    done = time.perf_counter()
+
+    reference = None
+    if read.reference is not None:
+        fitted = np.isfinite(read.reference.centroids)
+        shifts = read.reference.shifts[fitted]
+        reference = {"off_frames": int(np.sum(capture.tags == "off")), "rows_fitted": int(fitted.sum()),
+                     "shift_columns": {"min": float(shifts.min()), "max": float(shifts.max())}}
+    polarity = {}
+    for sign in ("+", "-"):
+        kept = [i for i, (t, d) in enumerate(zip(capture.tags, capture.drop)) if t == sign and not d]
+        stats = [read.stats[i] for i in kept if read.stats[i] is not None]
+        polarity[sign] = {"kept": len(stats), "dropped": int(np.sum((capture.tags == sign) & capture.drop))}
+        if kept:
+            polarity[sign]["intensity"] = float(np.median([read.intensity[i] for i in kept]))
+        if stats:
+            polarity[sign].update({k: float(np.median([s[k] for s in stats])) for k in ("x_d", "x_w")})
+            polarity[sign]["x_d - x_w"] = float(np.median([s["x_d"] - s["x_w"] for s in stats]))
+            polarity[sign]["witness_low"] = bool(np.mean([s["witness_low"] for s in stats]) > 0.5)
+    r = read.reading
+    record = {
+        "background": background.path, "streak_um_per_deg": streak_um_per_deg, "seconds": seconds, "drop_s": drop_s,
+        "camera": capture.camera, "frames": len(capture.frames),
+        "updates": dict(Counter(u.name for u in capture.updates)), "tags": dict(Counter(capture.tags)),
+        "reference": reference, "cut_row": read.cut, "polarity": polarity,
+        "reading": None if r is None else {
+            "spacing_um": 1e6 * r["spacing"], "drive_sigma_z_um": 1e6 * r["drive_sigma_z"],
+            "drive_charge_fraction": r["drive_charge_fraction"], "edge_frac": r["edge_frac"],
+            "cut_sens_um": 1e6 * r["cut_sens"]},
+        "checks": read.checks, "valid": all(read.checks.values()),
+        "timing_s": {"capture": captured - start, "reading": done - captured},
+        "peak_memory_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+        "per_frame": {"pulse_id": [f.pulse_id for f in capture.frames],
+                      "amplitude": [None if np.isnan(a) else float(a) for a in capture.amplitude],
+                      "phase": [None if np.isnan(p) else float(p) for p in capture.phase],
+                      "tag": [str(t) for t in capture.tags], "drop": capture.drop.tolist(),
+                      "intensity": read.intensity, "band_stats": read.stats}}
+    path = save_record("S5", "step", record)
+    arrays = {"crops": crops, **frame_arrays(capture), **{f"median_{s}": m for s, m in read.medians.items()}}
+    if read.reference is not None:
+        arrays.update(reference_image=read.reference.image, reference_centroids=read.reference.centroids,
+                      reference_shifts=read.reference.shifts)
+    np.savez_compressed(path.with_suffix(".npz"), **arrays)
+    return Reading(record, str(path), read.medians)

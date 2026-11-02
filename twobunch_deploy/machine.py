@@ -3,9 +3,11 @@
 S1  frames(): every DTOTR2 frame published during a capture, with its pulse ID
 S2  get(): one read of a scalar PV in pvs.READ; camera_settings(): the DTOTR2 camera's ROI, orientation, exposure,
     gain, pixel size, and where its array comes from and its size
+S4  updates(): every update of some scalar PVs while a block runs (the TCAV readbacks during frames())
 """
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import NamedTuple
 
@@ -20,6 +22,13 @@ class Frame(NamedTuple):
     timestamp: float    # EPICS timestamp of the frame, POSIX seconds
     received: float     # when the callback got it, POSIX seconds on this host
     data: np.ndarray    # the raw flat array as published; S2 reshapes and orients it
+
+
+class Update(NamedTuple):
+    name: str           # the PV
+    pulse_id: int       # timestamp nanoseconds & 0x1ffff
+    timestamp: float    # EPICS timestamp of the value, POSIX seconds
+    value: float
 
 
 def frames(seconds: float) -> list[Frame]:
@@ -65,3 +74,30 @@ def camera_settings() -> dict:
     """
     enums = ("_ORIENT", "ReverseX_RBV", "ReverseY_RBV")
     return {name.rsplit(":", 1)[1]: get(name, as_string=name.endswith(enums)) for name in pvs.CAMERA_SETTINGS}
+
+
+@contextlib.contextmanager
+def updates(names: list[str]):
+    """Every update of the scalar PVs `names` while the `with` block runs, in the list it yields.
+
+    Subscribes when the block starts and disconnects when it ends. The first update of each PV is its current
+    value, which can be old. Raises ValueError if a name isn't in pvs.READ, and TimeoutError if a PV doesn't
+    connect within 2 s.
+    """
+    for name in names:
+        if name not in pvs.READ:
+            raise ValueError(f"{name} is not in pvs.READ")
+    got = []
+
+    def keep(pvname, value, nanoseconds, timestamp, **_):     # runs in pyepics' Channel Access thread: only append
+        got.append(Update(pvname, nanoseconds & 0x1ffff, timestamp, value))
+
+    monitors = [epics.PV(name, auto_monitor=epics.dbr.DBE_VALUE, callback=keep) for name in names]
+    try:
+        for pv in monitors:
+            if not pv.wait_for_connection(timeout=2):
+                raise TimeoutError(f"no answer from {pv.pvname}")
+        yield got
+    finally:
+        for pv in monitors:
+            pv.disconnect()

@@ -31,8 +31,15 @@ CAMERA_SETTINGS = {
     "CAMR:LI20:107:RAW:ArraySize1_RBV": "camera array: number of rows",
 }
 
+# The XTCAV's amplitude (MV) and phase (deg) readbacks, read with every frame and matched to it by pulse ID (S4).
+# The names are the DAQ's (BSA_List_S20); live names, units and update rate checked on srv01 before the S4 check.
+TCAV_AMPLITUDE = "TCAV:LI20:2400:A"
+TCAV_PHASE = "TCAV:LI20:2400:P"
+
 # PV name -> what it is and the stage that added it
 READ: dict[str, str] = {
     CAMERA: "DTOTR2 XTCAV camera image, raw flat array (S1)",
     **{name: f"DTOTR2 {what} (S2)" for name, what in CAMERA_SETTINGS.items()},
+    TCAV_AMPLITUDE: "XTCAV amplitude readback, MV (S4)",
+    TCAV_PHASE: "XTCAV phase readback, deg (S4)",
 }
