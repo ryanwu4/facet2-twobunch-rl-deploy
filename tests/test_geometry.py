@@ -8,22 +8,12 @@ import sys
 
 import numpy as np
 import pytest
-from PIL import Image
 
-from conftest import DAQ, MODES, REPO, camera, daq, needs_daq
+from conftest import DAQ, MODES, XTCAV, YIHENG, camera, daq, needs_daq, needs_yiheng, pil_crop
 from twobunch_deploy import machine, pvs, screen, session
 
-YIHENG = REPO.parent / "XTCAV_analysis/yiheng/DAQ_analysis_class"
-XTCAV = REPO.parent / "XTCAV_analysis"
-needs_yiheng = pytest.mark.skipif(not (YIHENG / "image.py").exists(), reason=f"needs Yiheng's code in {YIHENG}")
 # the camera ROIs of the E331 runs (metadata.DTOTR2)
 E331 = [(372, 108, 256, 830), (382, 124, 238, 786), (394, 112, 208, 826)]
-
-
-def pil_crop(frame):
-    """A DAQ frame at the trained ROI, oriented (TEST_15668's: a transpose) and hand-cropped by PIL, as the
-    DAQ classes do."""
-    return np.array(Image.fromarray(np.ascontiguousarray(frame.T)).crop(screen.HAND_CROP))
 
 
 def test_orient():
