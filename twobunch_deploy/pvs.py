@@ -31,8 +31,9 @@ CAMERA_SETTINGS = {
     "CAMR:LI20:107:RAW:ArraySize1_RBV": "camera array: number of rows",
 }
 
-# The XTCAV's amplitude (MV) and phase (deg) readbacks, read with every frame and matched to it by pulse ID (S4).
-# The names are the DAQ's (BSA_List_S20); live names, units and update rate checked on srv01 before the S4 check.
+# The XTCAV's amplitude (MV) and phase (deg at 11.424 GHz) readbacks, read with every frame and matched to it by
+# pulse ID (S4). The DAQ's names (BSA_List_S20). On srv01 (11-02, by hand) they update every 12 pulse IDs (30 Hz),
+# timestamped with the pulse: every camera frame (10 Hz) has its own.
 TCAV_AMPLITUDE = "TCAV:LI20:2400:A"
 TCAV_PHASE = "TCAV:LI20:2400:P"
 

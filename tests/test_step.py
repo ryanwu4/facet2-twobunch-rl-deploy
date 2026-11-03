@@ -109,6 +109,12 @@ def test_read_step():
     assert r.reading["spacing"] == pytest.approx(80 * 30.5e-6 / (2 * 1100.0 / screen.UM_PER_DEG_RF))
     assert [s is not None for s in r.stats] == [t in ("+", "-") for t in tags]    # dropped frames too
     assert set(r.medians) == {"+", "-"}
+    # beam widths and intensities: an off frame uncorrected (a narrow beam: the threshold cuts its tails), a kept +
+    # frame corrected, none for neither
+    off = screen.process(crops[0], background)
+    assert r.x_rms[0] == screen.x_rms(off, X) < 0.15e-3 and r.intensity[0] == off.sum()
+    assert r.x_rms[22] == screen.x_rms(kept, X) > 1e-3 and r.x_rms[38] is r.intensity[38] is None
+    assert screen.x_rms(np.zeros((300, 450)), X) is None
 
     # 15 kept per polarity is enough, 14 not
     drop[22] = True
@@ -162,13 +168,12 @@ def yiheng():
 
 
 def daq_steps(dataset, xtcav, run):
-    """Each step of a DAQ run with v7's inputs: (step, hand crops, tags) of its +, - and off shots in shot order,
-    with v7's tags (classify_tcav_shots: its off includes frames in the middle of a flip); and the run's DAQ
-    background."""
+    """Each step of a DAQ run with v7's inputs: the steps, step(k) giving the hand crops and tags of step k's +, -
+    and off shots in shot order, and the run's DAQ background. The tags are acquire.tag on the whole run's readbacks,
+    as v7 classified them (test_tcav: equal to classify_tcav_shots)."""
     ds = dataset.DATASET(str(XTCAV), *run.split("_"))
     classified = xtcav.classify_tcav_shots(ds)
-    tags = np.full(ds.N, "neither", dtype=object)
-    tags[classified["ix_off"]], tags[classified["ix_plus"]], tags[classified["ix_neg"]] = "off", "+", "-"
+    tags = acquire.tag(np.asarray(classified["amp"], float), np.asarray(classified["phase"], float))
     steps = np.asarray(ds.common_stepIndex)
     images = ds.images["DTOTR2"]
     pulse_id = np.asarray(images["pid"])[np.asarray(images["common_index"]) - 1]
@@ -218,7 +223,7 @@ def v7_kept(ours, theirs):
 @needs_v7
 @pytest.mark.parametrize("run", ["TEST_15668", "E300_15671", "E300_15673"])
 def test_step_readings_equal_v7(yiheng, run):
-    """Every step of the run through read_step with v7's inputs (DAQ background, v7's tags, the run's calibration at
+    """Every step of the run through read_step with v7's inputs (DAQ background, the tags, the run's calibration at
     30.5 um/px, no drop): the same cut, frame offsets and reading as online_replay_v7_noauto_2026-10-19.
 
     v7 also dropped the frames whose energy-spectrum fit failed (xtcav.fit_dy_from_shot, which the reading doesn't
@@ -277,10 +282,12 @@ def test_step(replay, tmp_path, monkeypatch):
     assert frames["pulse_id"] == frame_ids and frames["tag"] == tags.tolist() and frames["drop"] == drop.tolist()
     assert "unmatched" in frames["tag"] and "off" in frames["tag"] and any(frames["drop"])
     np.testing.assert_equal(frames["band_stats"], expected.stats)
-    assert frames["intensity"] == expected.intensity
+    assert frames["intensity"] == expected.intensity and frames["x_rms"] == expected.x_rms
     assert r.record["cut_row"] == expected.cut and r.record["checks"] == expected.checks
     assert r.record["reading"]["spacing_um"] == 1e6 * expected.reading["spacing"]
     assert r.record["reference"]["off_frames"] == list(tags).count("off")
+    widths = [1e3 * w for w, t in zip(expected.x_rms, tags) if t == "off"]
+    assert r.record["reference"]["off_x_rms_mm"] == {"median": np.median(widths), "max": max(widths)}
     for sign in ("+", "-"):
         np.testing.assert_array_equal(r.medians[sign], expected.medians[sign])
     np.testing.assert_equal(json.loads(Path(r.path).read_text()), json.loads(json.dumps(r.record)))

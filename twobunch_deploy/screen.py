@@ -279,11 +279,23 @@ def reading(plus: list[dict], minus: list[dict], streak_um_per_deg: float) -> di
             "cut_sens": 0.5 * abs(hi - lo)}
 
 
+def x_rms(image: np.ndarray, x: np.ndarray) -> float | None:
+    """The beam's x RMS width (m) in a processed frame; None without intensity. In the DAQ runs about 0.2 mm
+    unstreaked and 0.7-1.1 mm streaked: the off frames' widths show whether the TCAV was off for the beam."""
+    projection = image.sum(axis=0)
+    if projection.sum() <= 0:
+        return None
+    centre = np.average(x, weights=projection)
+    return float(np.sqrt(np.average((x - centre) ** 2, weights=projection)))
+
+
 class StepReading(NamedTuple):
     reference: Reference | None     # from the step's off frames; None if it has none, or no row could be fitted
     cut: int | None                 # the step's energy cut (step_cut)
     stats: list                     # each + and - frame's band_stats at the cut (dropped ones too); None for the rest
-    intensity: list                 # each + and - frame's summed intensity (processed, corrected); None for the rest
+    intensity: list                 # each +, - and off frame's summed intensity (processed; + and - corrected);
+                                    # None for the rest
+    x_rms: list                     # each +, - and off frame's beam x RMS (m, x_rms), likewise
     medians: dict                   # "+" and "-": the median of the polarity's kept frames, processed and corrected
     reading: dict | None            # reading() of the kept frames; None unless both polarities have one with stats
     checks: dict                    # what a valid reading needs, each True or False
@@ -304,19 +316,20 @@ def read_step(crops: np.ndarray, tags: np.ndarray, drop: np.ndarray, background:
     `crops` are the hand crops, `tags` and `drop` from acquire, `x` each column's x (m, x_positions) and
     `streak_um_per_deg` the TCAV calibration at x's pixel size.
     """
-    off = [process(crop, background) for crop, t in zip(crops, tags) if t == "off"]
+    processed = {i: process(crop, background) for i, (crop, t) in enumerate(zip(crops, tags)) if t in ("+", "-", "off")}
+    off = [processed[i] for i in processed if tags[i] == "off"]
     reference = row_reference(off) if off else None
-    frames = {}                                     # frame index -> processed, corrected + or - frame
-    for i, (crop, t) in enumerate(zip(crops, tags)):
-        if t in ("+", "-"):
-            processed = process(crop, background)
-            frames[i] = processed if reference is None else shift_rows(processed, reference.shifts)
+    # frame index -> processed frame; the + and - frames corrected
+    frames = {i: image if reference is None or tags[i] == "off" else shift_rows(image, reference.shifts)
+              for i, image in processed.items()}
     kept = {sign: [i for i in frames if tags[i] == sign and not drop[i]] for sign in ("+", "-")}
     cut = step_cut([frames[i] for i in kept["+"]])
-    stats = [band_stats(frames[i], x, cut) if i in frames and cut is not None else None for i in range(len(tags))]
+    stats = [band_stats(frames[i], x, cut) if i in frames and tags[i] != "off" and cut is not None else None
+             for i in range(len(tags))]
     good = {sign: [stats[i] for i in kept[sign] if stats[i] is not None] for sign in ("+", "-")}
     result = reading(good["+"], good["-"], streak_um_per_deg) if good["+"] and good["-"] else None
     intensity = [float(frames[i].sum()) if i in frames else None for i in range(len(tags))]
+    widths = [x_rms(frames[i], x) if i in frames else None for i in range(len(tags))]
     checks = {f"+ frames >= {MIN_FRAMES}": len(good["+"]) >= MIN_FRAMES,
               f"- frames >= {MIN_FRAMES}": len(good["-"]) >= MIN_FRAMES,
               "row-correction reference": reference is not None,
@@ -328,4 +341,4 @@ def read_step(crops: np.ndarray, tags: np.ndarray, drop: np.ndarray, background:
                   all(kept[sign] and np.median([intensity[i] for i in kept[sign]]) >= MIN_INTENSITY
                       for sign in ("+", "-"))}
     medians = {sign: np.median([frames[i] for i in kept[sign]], axis=0) for sign in kept if kept[sign]}
-    return StepReading(reference, cut, stats, intensity, medians, result, checks)
+    return StepReading(reference, cut, stats, intensity, widths, medians, result, checks)

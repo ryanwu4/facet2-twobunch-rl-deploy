@@ -388,8 +388,8 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
 
     Without both polarities, an off frame or a cut the reading is invalid (its checks say which), but everything the
     frames allow is still computed and recorded. Saves data/<date>_S5/step_<HHMMSS>.json (the reading and its checks,
-    counts, the reference fit, timing, peak memory, and each frame's pulse ID, readbacks, tag, drop, intensity and
-    band statistics) and .npz (every frame's hand crop with the same, the reference and the two median frames).
+    counts, the reference fit and its off frames' beam width, timing, peak memory, and each frame's pulse ID,
+    readbacks, tag, drop, intensity, beam x RMS and band statistics) and .npz (every frame's hand crop with the same, the reference and the two median frames).
     """
     import resource
     import numpy as np
@@ -409,8 +409,10 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
     if read.reference is not None:
         fitted = np.isfinite(read.reference.centroids)
         shifts = read.reference.shifts[fitted]
+        widths = [1e3 * w for w, t in zip(read.x_rms, capture.tags) if t == "off" and w is not None]
         reference = {"off_frames": int(np.sum(capture.tags == "off")), "rows_fitted": int(fitted.sum()),
-                     "shift_columns": {"min": float(shifts.min()), "max": float(shifts.max())}}
+                     "shift_columns": {"min": float(shifts.min()), "max": float(shifts.max())},
+                     "off_x_rms_mm": {"median": float(np.median(widths)), "max": max(widths)}}
     polarity = {}
     for sign in ("+", "-"):
         kept = [i for i, (t, d) in enumerate(zip(capture.tags, capture.drop)) if t == sign and not d]
@@ -439,7 +441,7 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
                       "amplitude": [None if np.isnan(a) else float(a) for a in capture.amplitude],
                       "phase": [None if np.isnan(p) else float(p) for p in capture.phase],
                       "tag": [str(t) for t in capture.tags], "drop": capture.drop.tolist(),
-                      "intensity": read.intensity, "band_stats": read.stats}}
+                      "intensity": read.intensity, "x_rms": read.x_rms, "band_stats": read.stats}}
     path = save_record("S5", "step", record)
     arrays = {"crops": crops, **frame_arrays(capture), **{f"median_{s}": m for s, m in read.medians.items()}}
     if read.reference is not None:

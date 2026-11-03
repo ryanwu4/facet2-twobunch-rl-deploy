@@ -15,33 +15,44 @@ from twobunch_deploy import acquire, machine, pvs, session
 
 
 def test_tag():
-    # the mean of the amplitudes above 10 MV is 22.0
-    amplitude = np.array([22.0, 22.0, 22.2, 21.8, 22.3, 21.7, 0.99, 1.0, np.nan, 22.0])
-    phase = np.array([90.0, -90.9, 90.99, -89.0, 90.0, -90.0, 90.0, 0.0, 90.0, np.nan])
+    # the amplitudes above 10 MV average 22.0; the + and - frames' 22.067, so off is below 21.567
+    amplitude = np.array([22.0, 22.0, 22.2, 21.8, 22.3, 21.7, 21.5, 22.5, 21.6, 22.4, 22.0, np.nan, 0.01])
+    phase = np.array([90.0, -90.9, 90.99, -89.0, 90.0, -90.0, 90.0, 90.0, 90.0, 90.0, np.nan, 90.0, 90.0])
     assert acquire.tag(amplitude, phase).tolist() == [
         "+", "-", "+",
         "neither",                  # the phase 1.0 deg from -90
-        "neither", "neither",       # the amplitude 0.3 MV from the mean
-        "off",                      # below 1 MV, whatever the phase
-        "neither",                  # 1 MV is not off
-        "unmatched", "unmatched"]
+        "neither", "neither",       # the amplitude 0.3 MV from the first mean
+        "off",                      # 0.567 MV below the + and - frames' mean, whatever the phase
+        "neither",
+        "neither",                  # 0.467 MV below: not off
+        "neither",
+        "unmatched", "unmatched",
+        "off"]
 
 
-def test_tag_without_the_tcav_on():
-    """No amplitude above 10 MV: no frame is + or -, whatever its phase."""
-    assert acquire.tag(np.array([0.01, 0.02, 5.0]), np.array([90.0, -90.0, 90.0])).tolist() == \
-        ["off", "off", "neither"]
+def test_tag_without_plus_or_minus():
+    """No + or - frame: off is 0.5 MV below the mean of the amplitudes above 10 MV; none above 10 MV (the TCAV off
+    throughout): below 9.5 MV, and no frame is + or -, whatever its phase."""
+    assert acquire.tag(np.array([22.0, 22.0, 21.0, 0.01]), np.array([0.0, 45.0, 0.0, 90.0])).tolist() == \
+        ["neither", "neither", "off", "off"]
+    assert acquire.tag(np.array([0.01, 0.02, 9.4, 9.6]), np.array([90.0, -90.0, 90.0, -90.0])).tolist() == \
+        ["off", "off", "off", "neither"]
 
 
 def test_dropped():
     # frames every 36 pulse IDs (10 Hz) across the wrap; a 0.25 s drop is 90 pulse IDs
-    pulse_ids = [(131040 - 72 + 36 * i) % 131040 for i in range(16)]
-    tags = ["+", "+", "+", "+", "neither", "+", "off", "+", "+", "+", "+", "-", "unmatched", "-", "-", "-"]
-    expected = [True, True, True, False,    # the capture's first tagged frame begins a window
-                False, False,               # a phase excursion doesn't begin a new one
-                False,                      # off frames are never dropped
-                True, True, True, False,    # + after off begins a new window
-                True, False, True, False, False]    # unmatched frames are skipped
+    tags = (["+", "+", "+", "+", "neither", "+", "off", "+", "+", "+", "+", "-", "unmatched", "-", "-", "-"]
+            + ["neither"] * 5 + ["-"] * 4 + ["neither"] * 4 + ["-"]
+            + ["neither"] * 3 + ["unmatched"] * 2 + ["neither"] * 2 + ["-"])
+    pulse_ids = [(131040 - 72 + 36 * i) % 131040 for i in range(len(tags))]
+    expected = ([True, True, True, False,     # the capture's first tagged frame begins a window
+                 False, False,                # one frame of neither doesn't begin a new one
+                 False,                       # off frames are never dropped
+                 True, True, True, False,     # + after off begins a new window
+                 True, False, True, False, False]    # unmatched frames are skipped
+                + [False] * 5 + [True, True, True, False]    # 5 frames of neither end the window
+                + [False] * 4 + [False]                      # 4 don't
+                + [False] * 7 + [True])                      # unmatched frames don't break a run of neither
     assert acquire.dropped(pulse_ids, np.array(tags, dtype=object), 0.25).tolist() == expected
 
 
@@ -59,21 +70,17 @@ def test_readback():
 @needs_yiheng
 @pytest.mark.parametrize("run", ["TEST_15668", "E300_15671", "E300_15673"])
 def test_tags_equal_classify_tcav_shots(run):
-    """On each DAQ run's readbacks: + and - are classify_tcav_shots', frame for frame. Off is a part of its off,
-    and the rest of its off has the TCAV on (above 10 MV), in the middle of a flip."""
+    """On each DAQ run's readbacks: off, + and - are classify_tcav_shots', frame for frame."""
     if not (XTCAV / run / f"{run}.mat").exists():
         pytest.skip(f"needs the DAQ run {XTCAV / run}")
     sys.path[:0] = [str(YIHENG), str(YIHENG.parent / "XTCAV_analysis_script")]
     import dataset
     import xtcav
     classified = xtcav.classify_tcav_shots(dataset.DATASET(str(XTCAV), *run.split("_")))
-    amplitude = np.asarray(classified["amp"], float)
-    tags = acquire.tag(amplitude, np.asarray(classified["phase"], float))
-    assert np.array_equal(np.flatnonzero(tags == "+"), classified["ix_plus"])
-    assert np.array_equal(np.flatnonzero(tags == "-"), classified["ix_neg"])
-    off = np.flatnonzero(tags == "off")
-    assert set(off) <= set(classified["ix_off"]) and len(off) > 0
-    assert (amplitude[np.setdiff1d(classified["ix_off"], off)] > acquire.ON_AMPLITUDE).all()
+    tags = acquire.tag(np.asarray(classified["amp"], float), np.asarray(classified["phase"], float))
+    for t, key in (("+", "ix_plus"), ("-", "ix_neg"), ("off", "ix_off")):
+        assert np.array_equal(np.flatnonzero(tags == t), classified[key])
+    assert len(classified["ix_off"]) > 300
 
 
 @needs_daq

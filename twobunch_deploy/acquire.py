@@ -1,9 +1,14 @@
 """Frames for one measurement step (S4): every DTOTR2 frame of a capture with the TCAV amplitude and phase readbacks of
-its pulse, each frame tagged off / + / -, and the + and - frames right after each polarity flip marked to drop.
+its pulse, each frame tagged off / + / -, and the + and - frames right after each polarity window began marked to
+drop.
 
-The + and - rule is Yiheng Ye's classify_tcav_shots (xtcav.py, after D. Storey's plot_TCAV.m), which the deployed
-analysis used. Off is an amplitude below OFF_AMPLITUDE: classify_tcav_shots' off (0.5 MV below the mean on amplitude)
-also takes frames in the middle of a flip, with the TCAV on (86% of its off frames in E300_15671 and E300_15673).
+The tags are Yiheng Ye's classify_tcav_shots (xtcav.py, after D. Storey's plot_TCAV.m), which the deployed analysis
+used. The readbacks don't show the TCAV's off windows as off. Ryan Loney's XTCAV toggler, whose pattern the DAQ runs
+match, turns the TCAV off for the beam by putting its klystron on standby and triggering the amplitude and phase
+detector on the standby pulse. So in an off window the readbacks stay near the on amplitude, with the phase slewing to
+the next polarity, while the beam is unstreaked: in the DAQ runs, about 75% of the frames tagged neither, and 90-99%
+of those tagged off, are unstreaked. The off tag catches the amplitude dip at the trigger switch, a few frames per
+off window.
 """
 from __future__ import annotations
 
@@ -14,10 +19,11 @@ import numpy as np
 from . import machine, pvs
 from .session import PULSE_ID_PERIOD, PULSES_PER_SECOND
 
-ON_AMPLITUDE = 10.0     # MV: the frames above it give the mean on amplitude
-OFF_AMPLITUDE = 1.0     # MV: below it the TCAV is off
-AMPLITUDE_TOL = 0.25    # MV: + and - frames are within this of the mean on amplitude
+ON_AMPLITUDE = 10.0     # MV: the frames above it give a first mean on amplitude
+AMPLITUDE_TOL = 0.25    # MV: + and - frames are within this of that first mean
 PHASE_TOL = 1.0         # deg: + frames are within this of +90, - frames of -90
+OFF_DIP = 0.5           # MV: off frames are more than this below the mean amplitude of the + and - frames
+NEITHER_RUN = 5         # frames: a run of at least this many frames tagged neither ends a polarity window (dropped)
 
 
 class Capture(NamedTuple):
@@ -56,20 +62,24 @@ def readback(frames: list, updates: list, name: str) -> np.ndarray:
 
 
 def tag(amplitude: np.ndarray, phase: np.ndarray) -> np.ndarray:
-    """Each frame's TCAV tag:
-    - "off": the amplitude is below OFF_AMPLITUDE;
-    - "+" and "-": the amplitude is within AMPLITUDE_TOL of the mean of the amplitudes above ON_AMPLITUDE, and the
-      phase within PHASE_TOL of +90 and -90 (classify_tcav_shots; without an amplitude above ON_AMPLITUDE, none);
-    - "neither": any other readback, e.g. during a flip;
+    """Each frame's TCAV tag, by classify_tcav_shots' rule:
+    - "+" and "-": the amplitude within AMPLITUDE_TOL of the mean of the amplitudes above ON_AMPLITUDE, and the
+      phase within PHASE_TOL of +90 and -90;
+    - "off": the amplitude more than OFF_DIP below the mean amplitude of the + and - frames (without any, of the
+      amplitudes above ON_AMPLITUDE; without those either, the TCAV is off throughout and the mean is ON_AMPLITUDE);
+    - "neither": any other readback, e.g. in an off window, or while the phase converges after one;
     - "unmatched": the frame has no readback.
+    Without an amplitude above ON_AMPLITUDE no frame is + or - (classify_tcav_shots then takes the mean of all the
+    amplitudes, and so can tag frames of a TCAV that is off as + or -).
     """
     on = amplitude > ON_AMPLITUDE
-    mean_on = amplitude[on].mean() if on.any() else np.nan
-    near = np.abs(amplitude - mean_on) < AMPLITUDE_TOL
+    first = amplitude[on].mean() if on.any() else np.nan
+    near = np.abs(amplitude - first) < AMPLITUDE_TOL
+    plus, minus = near & (np.abs(phase - 90) < PHASE_TOL), near & (np.abs(phase + 90) < PHASE_TOL)
+    mean_on = amplitude[plus | minus].mean() if (plus | minus).any() else first if on.any() else ON_AMPLITUDE
     tags = np.full(len(amplitude), "neither", dtype=object)
-    tags[near & (np.abs(phase - 90) < PHASE_TOL)] = "+"
-    tags[near & (np.abs(phase + 90) < PHASE_TOL)] = "-"
-    tags[amplitude < OFF_AMPLITUDE] = "off"
+    tags[plus], tags[minus] = "+", "-"
+    tags[amplitude < mean_on - OFF_DIP] = "off"
     tags[np.isnan(amplitude) | np.isnan(phase)] = "unmatched"
     return tags
 
@@ -79,16 +89,23 @@ def dropped(pulse_ids: list[int], tags: np.ndarray, drop_s: float) -> np.ndarray
     second, across the wrap): the screen keeps settling for about 1 s after the phase readback locks (10-19 analysis
     of 177 DAQ flips).
 
-    A window begins at a + or - frame whose most recent earlier frame tagged +, - or off has another tag (frames
-    tagged neither or unmatched are skipped, so a short phase excursion doesn't restart it), or at the capture's first
-    such frame, as the window may have begun just before the capture. Off frames are never dropped.
+    A window begins at a + or - frame
+    - whose most recent earlier frame tagged +, - or off has another tag;
+    - or that follows a run of at least NEITHER_RUN frames tagged neither (unmatched frames skipped): an off window,
+      or the phase converging after one, in which a stray frame can read within 1 deg of +-90;
+    - or that is the capture's first tagged frame, as the window may have begun just before the capture.
+    A shorter run of neither (a phase excursion) doesn't begin one. Off frames are never dropped.
     """
     drop = np.zeros(len(tags), bool)
     last = start = None
+    neither = 0                                     # frames tagged neither since the last +, - or off
     for i, (pulse_id, t) in enumerate(zip(pulse_ids, tags)):
+        if t == "neither":
+            neither += 1
         if t not in ("+", "-", "off"):
             continue
-        if t != last:
+        if t != last or neither >= NEITHER_RUN:
             last, start = t, pulse_id
+        neither = 0
         drop[i] = t != "off" and (pulse_id - start) % PULSE_ID_PERIOD < drop_s * PULSES_PER_SECOND
     return drop
