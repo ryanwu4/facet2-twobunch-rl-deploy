@@ -12,8 +12,9 @@ import h5py
 import numpy as np
 import pytest
 
-from conftest import MODES, V7, XTCAV, YIHENG, daq, needs_daq, needs_v7, pil_crop, tcav_readbacks
-from twobunch_deploy import acquire, screen, session, viz
+from conftest import (MODES, V7, XTCAV, YIHENG, constant_values, daq, l1_readbacks, needs_daq, needs_v7, pil_crop,
+                      tcav_readbacks)
+from twobunch_deploy import acquire, machine, pvs, screen, session, viz
 
 X = screen.x_positions(30.5)
 
@@ -155,8 +156,16 @@ def test_step_figure():
               "per_frame": {"pulse_id": [36 * i for i in range(len(tags))], "tag": tags.tolist(),
                             "drop": drop.tolist(), "band_stats": r.stats,
                             "amplitude": [None if t == "unmatched" else 22.0 for t in tags],
-                            "phase": [None if t == "unmatched" else 90.0 for t in tags]}}
-    assert len(viz.step(record, {"+": r.medians["+"]}).axes) == 5
+                            "phase": [None if t == "unmatched" else 90.0 for t in tags],
+                            "timestamp": [100 + 0.1 * i for i in range(len(tags))]}}
+    names = [*pvs.L1, *pvs.L2]
+    updates = [machine.Update(name, 36 * i, 100 + 0.1 * i, -23.5 + 0.1 * i if i % 3 else 0.0)
+               for i in range(4) for name in names[:2]] + [machine.Update(name, 0, 50.0, -20.0) for name in names[2:]]
+    updates.append(machine.Update(names[-1], 72, 100.2, -19.0))                  # a change: drawn first -> last
+    record["phases"] = {name: acquire.summarise(updates, name) for name in names}
+    assert len(viz.step(record, {"+": r.medians["+"]}, updates).axes) == 6
+    assert viz.changed(record["phases"][names[-1]]) == "-20.000 -> -19.000"
+    assert viz.changed(record["phases"][names[-2]]) == "-20.000" and viz.changed({"updates": 0}) == "no update"
 
 
 @pytest.fixture(scope="module")
@@ -290,6 +299,14 @@ def test_step(replay, tmp_path, monkeypatch):
     assert r.record["reference"]["off_x_rms_mm"] == {"median": np.median(widths), "max": max(widths)}
     for sign in ("+", "-"):
         np.testing.assert_array_equal(r.medians[sign], expected.medians[sign])
+    l1 = l1_readbacks()
+    for name, value in constant_values().items():                # S6, S7: one update each, on subscribing
+        assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value, "zeros": 0}
+    for name in next(iter(l1.values())):                          # one per frame with a shot
+        values = [l1[p][name] for p in frame_ids if p in l1]
+        assert r.record["phases"][name] == {"updates": len(values), "median": np.median(values), "first": values[0],
+                                            "last": values[-1], "zeros": 0}
+    assert len(frames["timestamp"]) == len(frame_ids) and np.all(np.diff(frames["timestamp"]) > 0)
     np.testing.assert_equal(json.loads(Path(r.path).read_text()), json.loads(json.dumps(r.record)))
     saved = np.load(Path(r.path).with_suffix(".npz"))
     assert np.array_equal(saved["crops"], crops) and np.array_equal(saved["reference_shifts"], expected.reference.shifts)

@@ -106,4 +106,4 @@ def test_tcav_test(replay, tmp_path, monkeypatch):
     saved = np.load(record.with_suffix(".npz"))
     assert saved["pulse_id"].tolist() == frame_ids and saved["tag"].tolist() == tags.tolist()
     assert np.array_equal(saved["amplitude"], amplitude) and np.array_equal(saved["phase"], phase)
-    assert saved["update_value"].size == 60
+    assert np.isin(saved["update_name"], [pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE]).sum() == 60     # and the L1, L2 PVs'

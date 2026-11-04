@@ -1,7 +1,8 @@
 """Calls the notebooks make. S0: where and with what a session runs, and saving records under data/.
 S1: capture_test() of the camera frames and pulse IDs. S2: geometry_test() of the camera settings and the
 hand crop. S3: backgrounds (take_background, pedestal, load_background), peek() and processing_test().
-S4: tcav_test() of the TCAV readbacks and tags; peek() shows the newest frame's tag. S5: step()."""
+S4: tcav_test() of the TCAV readbacks and tags; peek() shows the newest frame's tag. S5: step(). S6, S7: phases_test()
+of the L1 and L2 PVs; step() records them."""
 from __future__ import annotations
 
 import datetime
@@ -367,16 +368,18 @@ def frame_arrays(capture) -> dict:
 
 
 class Reading(NamedTuple):
-    """A step()'s reading: its record (saved as JSON at `path`) and each polarity's median frame, for show()."""
+    """A step()'s reading: its record (saved as JSON at `path`), each polarity's median frame and the capture's
+    updates (machine.Update), for show()."""
     record: dict
     path: str
     medians: dict
+    updates: list
 
     def show(self) -> None:
         """Draw the step (viz.step) and save the figure next to its record (.png)."""
         from . import viz
 
-        viz.step(self.record, self.medians).savefig(Path(self.path).with_suffix(".png"))
+        viz.step(self.record, self.medians, self.updates).savefig(Path(self.path).with_suffix(".png"))
 
 
 def step(background: Background, streak_um_per_deg: float, seconds: float = 15, drop_s: float = 1.0) -> Reading:
@@ -388,12 +391,14 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
 
     Without both polarities, an off frame or a cut the reading is invalid (its checks say which), but everything the
     frames allow is still computed and recorded. Saves data/<date>_S5/step_<HHMMSS>.json (the reading and its checks,
-    counts, the reference fit and its off frames' beam width, timing, peak memory, and each frame's pulse ID,
-    readbacks, tag, drop, intensity, beam x RMS and band statistics) and .npz (every frame's hand crop with the same, the reference and the two median frames).
+    counts, the reference fit and its off frames' beam width, the summary of each L1 and L2 PV over the capture
+    (acquire.summarise), timing, peak memory, and each frame's pulse ID, timestamp, readbacks, tag, drop, intensity,
+    beam x RMS and band statistics) and .npz (every frame's hand crop with the same, every update, the reference and
+    the two median frames).
     """
     import resource
     import numpy as np
-    from . import acquire, screen
+    from . import acquire, pvs, screen
 
     start = time.perf_counter()
     capture = acquire.capture(seconds, drop_s)
@@ -435,9 +440,11 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
             "drive_charge_fraction": r["drive_charge_fraction"], "edge_frac": r["edge_frac"],
             "cut_sens_um": 1e6 * r["cut_sens"]},
         "checks": read.checks, "valid": all(read.checks.values()),
+        "phases": {name: acquire.summarise(capture.updates, name) for name in [*pvs.L1, *pvs.L2]},
         "timing_s": {"capture": captured - start, "reading": done - captured},
         "peak_memory_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
         "per_frame": {"pulse_id": [f.pulse_id for f in capture.frames],
+                      "timestamp": [f.timestamp for f in capture.frames],
                       "amplitude": [None if np.isnan(a) else float(a) for a in capture.amplitude],
                       "phase": [None if np.isnan(p) else float(p) for p in capture.phase],
                       "tag": [str(t) for t in capture.tags], "drop": capture.drop.tolist(),
@@ -448,4 +455,41 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
         arrays.update(reference_image=read.reference.image, reference_centroids=read.reference.centroids,
                       reference_shifts=read.reference.shifts)
     np.savez_compressed(path.with_suffix(".npz"), **arrays)
-    return Reading(record, str(path), read.medians)
+    return Reading(record, str(path), read.medians, capture.updates)
+
+
+def phases_test(seconds: float = 60) -> dict:
+    """S6, S7: every update of the L1 and L2 PVs (pvs.L1, pvs.L2) during `seconds`, without the camera. For each PV,
+    what step() records (acquire.summarise) with the standard deviation, minimum and maximum, the pulse-ID steps between
+    updates and the age of the first update (for a setpoint, the time since it was last written); for each L1 phase
+    readback, its median minus its setpoint's (pvs.L1_SETPOINTS).
+
+    Saves the summary to data/<date>_S6/phases_test_<HHMMSS>.json and, next to it, every update (.npz) and each PV
+    against time (viz.phases, .png).
+    """
+    import numpy as np
+    from . import acquire, machine, pvs, viz
+
+    names = [*pvs.L1, *pvs.L2]
+    start = time.time()
+    with machine.updates(names) as updates:
+        time.sleep(seconds)
+    updates = list(updates)
+    summary = {"seconds": seconds, "pvs": {}, "readback - setpoint": {}}
+    for name in names:
+        summary["pvs"][name] = acquire.summarise(updates, name)
+        mine = [u for u in updates if u.name == name]
+        if mine:
+            values = [u.value for u in mine]
+            summary["pvs"][name].update(
+                std=float(np.std(values)), min=float(min(values)), max=float(max(values)),
+                pulse_id_steps=pulse_id_steps([u.pulse_id for u in mine]), first_age_s=start - mine[0].timestamp)
+    for readback, setpoint in pvs.L1_SETPOINTS.items():
+        medians = [summary["pvs"][n].get("median") for n in (readback, setpoint)]
+        summary["readback - setpoint"][readback] = None if None in medians else medians[0] - medians[1]
+    path = save_record("S6", "phases_test", summary)
+    np.savez_compressed(path.with_suffix(".npz"), name=[u.name for u in updates],
+                        pulse_id=[u.pulse_id for u in updates], timestamp=[u.timestamp for u in updates],
+                        value=[u.value for u in updates])
+    viz.phases(updates, names, start, seconds).savefig(path.with_suffix(".png"))
+    return summary

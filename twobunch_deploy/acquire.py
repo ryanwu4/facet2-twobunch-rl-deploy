@@ -1,6 +1,6 @@
 """Frames for one measurement step (S4): every DTOTR2 frame of a capture with the TCAV amplitude and phase readbacks of
 its pulse, each frame tagged off / + / -, and the + and - frames right after each polarity window began marked to
-drop.
+drop. S6, S7: every update of the L1 and L2 PVs during the same capture, and a summary of each.
 
 The tags are Yiheng Ye's classify_tcav_shots (xtcav.py, after D. Storey's plot_TCAV.m), which the deployed analysis
 used. The readbacks don't show the TCAV's off windows as off. Ryan Loney's XTCAV toggler, whose pattern the DAQ runs
@@ -29,7 +29,7 @@ NEITHER_RUN = 5         # frames: a run of at least this many frames tagged neit
 class Capture(NamedTuple):
     camera: dict            # the camera readbacks, read just before the frames (machine.camera_settings)
     frames: list            # every frame published during the capture (machine.Frame)
-    updates: list           # every update of the TCAV readbacks during the capture (machine.Update)
+    updates: list           # every update of the TCAV readbacks and the L1 and L2 PVs during the capture (machine.Update)
     amplitude: np.ndarray   # each frame's TCAV amplitude (MV); nan if no update has its pulse (readback)
     phase: np.ndarray       # each frame's TCAV phase (deg); likewise
     tags: np.ndarray        # each frame's tag (tag)
@@ -38,9 +38,10 @@ class Capture(NamedTuple):
 
 def capture(seconds: float, drop_s: float = 1.0) -> Capture:
     """The camera readbacks, then every frame published during the next `seconds` with the TCAV readbacks of its
-    pulse; each frame tagged, and the frames to drop after each flip marked."""
+    pulse; each frame tagged, and the frames to drop after each flip marked. The L1 and L2 PVs (pvs.L1, pvs.L2) are
+    monitored alongside (summarise)."""
     camera = machine.camera_settings()
-    with machine.updates([pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE]) as updates:
+    with machine.updates([pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE, *pvs.L1, *pvs.L2]) as updates:
         frames = machine.frames(seconds)
     updates = list(updates)
     amplitude, phase = (readback(frames, updates, name) for name in (pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE))
@@ -59,6 +60,17 @@ def readback(frames: list, updates: list, name: str) -> np.ndarray:
         u = by_pulse.get(f.pulse_id)
         values.append(u.value if u is not None and abs(u.timestamp - f.timestamp) < 1 else np.nan)
     return np.array(values, float)
+
+
+def summarise(updates: list, name: str) -> dict:
+    """The updates of the PV `name` during a capture (S6, S7): how many, their median, the first (the PV's value when
+    the capture began: a monitor's first update is the current value) and the last, and how many read exactly 0. In
+    TEST_15668, FAST_PACT reads 0 on 0.6-0.8% of the shots (BSA dropouts), which barely move the median."""
+    values = [u.value for u in updates if u.name == name]
+    if not values:
+        return {"updates": 0}
+    return {"updates": len(values), "median": float(np.median(values)), "first": float(values[0]),
+            "last": float(values[-1]), "zeros": values.count(0)}
 
 
 def tag(amplitude: np.ndarray, phase: np.ndarray) -> np.ndarray:
