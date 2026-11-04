@@ -107,7 +107,7 @@ def test_get_missing_pv(replay, monkeypatch):
 
 
 @needs_daq
-@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("mode", ["roi", "full", "srv01"])       # the camera ROIs; "step" is S5's
 def test_geometry_test(replay, tmp_path, monkeypatch, mode):
     monkeypatch.setattr(session, "DATA", tmp_path)
     data, frame_ids = daq()

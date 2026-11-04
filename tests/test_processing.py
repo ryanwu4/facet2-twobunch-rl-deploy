@@ -13,8 +13,9 @@ import h5py
 import numpy as np
 import pytest
 
-from conftest import FEATURES, MODES, XTCAV, YIHENG, daq, needs_daq, needs_features, needs_yiheng, pil_crop
-from twobunch_deploy import screen, session, viz
+from conftest import (FEATURES, MODES, XTCAV, YIHENG, daq, needs_daq, needs_features, needs_yiheng, pil_crop,
+                      tcav_readbacks)
+from twobunch_deploy import acquire, screen, session, viz
 
 
 def two_bands():
@@ -173,8 +174,15 @@ def test_peek(replay, tmp_path, monkeypatch):
     data, frame_ids = daq()
     background = session.Background(screen.pedestal(np.stack([pil_crop(frame) for frame in data])), "pedestal", {})
     replay("srv01")
-    summary = session.peek(background, seconds=3)
+    summary = session.peek(background, seconds=5)      # ends on frames tagged neither, starts on -
     assert summary["frames"] > 1 and summary["pulse_id"] != frame_ids[0]      # the newest frame, not the first
+    # S4: its TCAV readbacks, and its tag among the frames captured
+    readbacks = tcav_readbacks()
+    newest = frame_ids.index(summary["pulse_id"])
+    captured = frame_ids[newest - summary["frames"] + 1:newest + 1]
+    tags = acquire.tag(*np.array([readbacks[p] for p in captured]).T)
+    assert summary["tcav"] == {"tag": tags[-1], "amplitude": readbacks[summary["pulse_id"]][0],
+                               "phase": readbacks[summary["pulse_id"]][1]}
     processed = screen.process(pil_crop(data[frame_ids.index(summary["pulse_id"])]), background.image)
     cut = screen.valley(processed.sum(axis=1)).cut
     assert summary["band_stats"] == (None if cut is None else screen.band_stats(processed, screen.x_positions(30.5), cut))
