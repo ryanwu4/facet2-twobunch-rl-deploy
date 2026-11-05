@@ -12,7 +12,7 @@ import h5py
 import numpy as np
 import pytest
 
-from conftest import (MODES, V7, XTCAV, YIHENG, constant_values, daq, l1_readbacks, needs_daq, needs_v7, pil_crop,
+from conftest import (MODES, V7, XTCAV, YIHENG, constant_values, daq, needs_daq, needs_v7, pil_crop, preq_values,
                       tcav_readbacks)
 from twobunch_deploy import acquire, machine, pvs, screen, session, viz
 
@@ -163,7 +163,10 @@ def test_step_figure():
                for i in range(4) for name in names[:2]] + [machine.Update(name, 0, 50.0, -20.0) for name in names[2:]]
     updates.append(machine.Update(names[-1], 72, 100.2, -19.0))                  # a change: drawn first -> last
     record["phases"] = {name: acquire.summarise(updates, name) for name in names}
-    assert len(viz.step(record, {"+": r.medians["+"]}, updates).axes) == 6
+    fig = viz.step(record, {"+": r.medians["+"]}, updates)
+    assert len(fig.axes) == 6
+    labels = fig.axes[-1].get_legend_handles_labels()[1]            # the L1 panel plots the two PREQs
+    assert [label.split(":")[3] for label in labels] == ["PREQ", "PREQ"]
     assert viz.changed(record["phases"][names[-1]]) == "-20.000 -> -19.000"
     assert viz.changed(record["phases"][names[-2]]) == "-20.000" and viz.changed({"updates": 0}) == "no update"
 
@@ -299,14 +302,14 @@ def test_step(replay, tmp_path, monkeypatch):
     assert r.record["reference"]["off_x_rms_mm"] == {"median": np.median(widths), "max": max(widths)}
     for sign in ("+", "-"):
         np.testing.assert_array_equal(r.medians[sign], expected.medians[sign])
-    l1 = l1_readbacks()
+    preq = preq_values()
     constants = constant_values()
     assert 0.0 in constants.values()                              # LI11:SBST:1:PDES, 0 in the DAQ
     for name, value in constants.items():                         # S6, S7: one update each, on subscribing
         assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value,
                                             "zeros": int(value == 0)}
-    for name in next(iter(l1.values())):                          # one per frame with a shot
-        values = [l1[p][name] for p in frame_ids if p in l1]
+    for name in next(iter(preq.values())):                        # one per frame with a shot
+        values = [preq[p][name] for p in frame_ids if p in preq]
         assert r.record["phases"][name] == {"updates": len(values), "median": np.median(values), "first": values[0],
                                             "last": values[-1], "zeros": 0}
     assert len(frames["timestamp"]) == len(frame_ids) and np.all(np.diff(frames["timestamp"]) > 0)

@@ -4,7 +4,7 @@ S2  geometry(): a full frame as the ops display orients it, with the hand crop o
 S3  background(): a background and its brightest frame; peek(): one frame through the processing, with its energy
     cut and band statistics
 S5  step(): one step's median frames, each frame's drive-witness offset, and the TCAV readbacks and tags; S6, S7 add
-    the L1 phase readbacks during the step, and the L1 setpoints and L2 PVs as text
+    the L1 phase setpoints during the step, and the other L1 and L2 PVs as text
 S6  phases(): each L1 and L2 PV against time
 """
 from __future__ import annotations
@@ -119,9 +119,9 @@ def step(record: dict, medians: dict, updates: list):
     witness x centroids. Second: each + and - frame's x_d - x_w, kept frames filled and dropped ones hollow, each
     polarity's median of the kept frames as a line. Third: each frame's TCAV amplitude and phase readback by tag,
     unmatched frames as x on the time axis. Time from the capture's first frame, by pulse ID; the dropped frames'
-    spans shaded. Bottom: every update of the L1 phase readbacks (pvs.L1_SETPOINTS) by its timestamp, their medians as
-    lines, exact zeros (BSA dropouts) off the axis; the L1 setpoints and the L2 PVs as text, first -> last if they
-    changed."""
+    spans shaded. Bottom: every update of the two L1 phase setpoints (PREQ) by its timestamp (one from before the first
+    frame, as a monitor's first update can be, at 0), their medians as lines, exact zeros off the axis; the other L1 and
+    L2 PVs as text, first -> last if they changed."""
     frames = record["per_frame"]
     pulse_ids = np.array(frames["pulse_id"])
     t = (pulse_ids - pulse_ids[0]) % PULSE_ID_PERIOD / PULSES_PER_SECOND
@@ -182,20 +182,22 @@ def step(record: dict, medians: dict, updates: list):
             ax.axvspan(t[i] - 0.05, t[i] + 0.05, color="0.85", lw=0)
         ax.set_xlabel("time from the first frame (s)")
 
-    for name, colour in zip(pvs.L1_SETPOINTS, L1_COLOURS):
+    preq = [name for name in pvs.L1 if name.endswith(":PREQ")]
+    for name, colour in zip(preq, L1_COLOURS):
         s = record["phases"][name]
         mine = [u for u in updates if u.name == name]
-        l1.plot([u.timestamp - frames["timestamp"][0] for u in mine], [u.value for u in mine], ".", color=colour, ms=3,
+        t_update = [max(u.timestamp - frames["timestamp"][0], 0) for u in mine]
+        l1.plot(t_update, [u.value for u in mine], ".", color=colour, ms=3,
                 label=f"{name}: {s['updates']} updates, {s.get('zeros', 0)} exact zeros")
         if "median" in s:
             l1.axhline(s["median"], color=colour, lw=1.2)
-    nonzero = [u.value for u in updates if u.name in pvs.L1_SETPOINTS and u.value != 0]
+    nonzero = [u.value for u in updates if u.name in preq and u.value != 0]
     if nonzero:
         l1.set_ylim(min(nonzero) - 0.1, max(nonzero) + 0.1)
     l1.set_xlabel("time from the first frame (s), by timestamp")
-    l1.set_ylabel("L1 phase readback (deg)")
+    l1.set_ylabel("L1 phase setpoint (deg)")
     l1.legend(fontsize=8, ncol=2)
-    lines = [pvs.L1_SETPOINTS.values()] + [[n for n in pvs.L2 if n.endswith(kind)] for kind in (":PDES", ":PHAS")]
+    lines = [[n for n in [*pvs.L1, *pvs.L2] if n.endswith(kind)] for kind in (":SSSB_PDES", ":PDES", ":PHAS")]
     l1.set_title("\n".join("; ".join(f"{name} {changed(record['phases'][name])}" for name in names) for names in lines),
                  fontsize=8)
 

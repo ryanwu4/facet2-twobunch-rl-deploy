@@ -1,6 +1,6 @@
 """Channel Access server for the offline tests: serves DAQ frames as the DTOTR2 camera PV, the camera readbacks,
-the DAQ's TCAV amplitude and phase readbacks and L1 phase and amplitude readbacks of each frame's shot, and the other
-L1 and L2 PVs (conftest.constant_values).
+the DAQ's TCAV amplitude and phase readbacks of each frame's shot, stand-ins for the L1 phase setpoints
+(conftest.PREQ_STAND_IN), and the other L1 and L2 PVs (conftest.constant_values).
 
     python tests/soft_ioc.py <DAQ h5 file> <first> <last>
 
@@ -11,8 +11,9 @@ publishes every frame of the file instead, at the trained ROI.
 Each DAQ frame (TEST_15668's, at the trained ROI) sits at its ROI in a sensor of dark pixels, and the IOC
 serves the mode's ROI of that sensor: in "roi" mode, exactly the DAQ's raw arrays. Frames are served as the
 flat array the camera publishes, as 16-bit integers (the live type, S1). Just before each frame, the IOC
-publishes the TCAV and L1 readbacks of its shot (conftest.tcav_readbacks, l1_readbacks) with the frame's timestamp;
-a frame without a shot gets none. The other L1 and L2 PVs keep their value. The test sets the addresses and ports through the environment, all on 127.0.0.1.
+publishes the TCAV readbacks and the PREQs of its shot (conftest.tcav_readbacks, preq_values) with the frame's
+timestamp; a frame without a shot gets none. The other L1 and L2 PVs keep their value. The test sets the addresses and
+ports through the environment, all on 127.0.0.1.
 """
 import asyncio
 import sys
@@ -22,7 +23,7 @@ import numpy as np
 from caproto import ChannelDouble, ChannelEnum, ChannelInteger, ChannelString, ChannelType
 from caproto.server import PVGroup, pvproperty, run
 
-from conftest import L1_BSA, MODES, constant_values, l1_readbacks, tcav_readbacks
+from conftest import MODES, PREQ_STAND_IN, constant_values, preq_values, tcav_readbacks
 from twobunch_deploy import pvs, screen
 
 path, first, last = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
@@ -31,8 +32,8 @@ with h5py.File(path) as f:
     attrs = f["entry/instrument/NDAttributes"]
     step_stamps = list(zip(attrs["NDArrayEpicsTSSec"][:].tolist(), attrs["NDArrayEpicsTSnSec"][:].tolist()))
 daq_frames, stamps = step_frames[first:last], step_stamps[first:last]
-tcav, l1 = tcav_readbacks(), l1_readbacks()
-phases = {**{name: ChannelDouble(value=0.0) for name in L1_BSA},
+tcav, preq = tcav_readbacks(), preq_values()
+phases = {**{name: ChannelDouble(value=0.0) for name in PREQ_STAND_IN},
           **{name: ChannelDouble(value=value) for name, value in constant_values().items()}}
 
 T = screen.TRAINED
@@ -74,7 +75,7 @@ class Camera(PVGroup):
         if (pulse_id := stamp[1] & 0x1ffff) in tcav:
             await self.amplitude.write(tcav[pulse_id][0], timestamp=stamp)
             await self.phase.write(tcav[pulse_id][1], timestamp=stamp)
-            for name, value in l1[pulse_id].items():
+            for name, value in preq[pulse_id].items():
                 await phases[name].write(value, timestamp=stamp)
         await self.image.write(frame, timestamp=stamp)
 

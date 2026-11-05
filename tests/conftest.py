@@ -2,8 +2,8 @@
 
 The soft IOC serves real DAQ frames, TCAV readbacks and L1 and L2 values, which are not in this public repo, so these
 tests run only where the TEST_15668 DTOTR2 files and the run's .mat are (DTOTR2_DAQ, default next to this repo) and
-are skipped in CI. So are the comparisons with Yiheng Ye's DAQ classes, twobunch-s2e-rl's online/features.py and its v7 replay,
-which need those next to this repo.
+are skipped in CI. So are the comparisons with Yiheng Ye's DAQ classes, twobunch-s2e-rl's online/features.py and its
+v7 replay, which need those next to this repo.
 """
 import os
 import socket
@@ -80,9 +80,9 @@ def tcav_readbacks() -> dict:
     return {int(p): (float(a), float(ph)) for p, a, ph in zip(pulse_id[here], amplitude[here], phase[here])}
 
 
-L1_BSA = [name for name in pvs.L1 if ":FB:" in name]      # FAST_PACT and FAST_AACT: the soft IOC serves them per shot
-# the PREQs are in no DAQ: the soft IOC serves these stand-ins, a different one for each station
-PREQ = dict(zip(pvs.L1_SETPOINTS.values(), (-20.0, -21.0)))
+# The PREQs are in no DAQ, and on srv01 a feedback changed them at 5 Hz (11-04). The soft IOC serves each station's
+# phase readback in the DAQ (FAST_PACT, BSA_List_S11RF) of each frame's shot in their place.
+PREQ_STAND_IN = {name: name.replace(":PREQ", ":FB:FAST_PACT") for name in pvs.L1 if name.endswith(":PREQ")}
 
 
 def shot_values(names: list[str], daq_list: str) -> dict:
@@ -97,18 +97,18 @@ def shot_values(names: list[str], daq_list: str) -> dict:
     return {int(p): {name: float(v[i]) for name, v in values.items()} for i, p in enumerate(pulse_id[here])}
 
 
-def l1_readbacks() -> dict:
-    """The DAQ's L1 phase and amplitude readbacks (BSA_List_S11RF) of the soft IOC's step, by pulse ID."""
-    return shot_values(L1_BSA, "BSA_List_S11RF")
+def preq_values() -> dict:
+    """The soft IOC's PREQs (PREQ_STAND_IN) at the shots of its step, by pulse ID: {pulse ID: {PREQ: value}}."""
+    shots = shot_values(list(PREQ_STAND_IN.values()), "BSA_List_S11RF")
+    return {p: {preq: v[pact] for preq, pact in PREQ_STAND_IN.items()} for p, v in shots.items()}
 
 
 def constant_values() -> dict:
-    """The value the soft IOC serves throughout for each other L1 and L2 PV: the step's median in the DAQ
-    (nonBSA_List_LINAC_SBST), and the PREQ stand-ins."""
-    names = [n for n in [*pvs.L1, *pvs.L2] if n not in L1_BSA and n not in pvs.L1_SETPOINTS.values()]
+    """The value the soft IOC serves throughout for each L1 and L2 PV but the PREQs: the step's median in the DAQ
+    (nonBSA_List_LINAC_SBST)."""
+    names = [n for n in [*pvs.L1, *pvs.L2] if n not in PREQ_STAND_IN]
     shots = shot_values(names, "nonBSA_List_LINAC_SBST").values()
-    return {**{n: float(np.nanmedian([s[n] for s in shots])) for n in names},
-            **PREQ}
+    return {n: float(np.nanmedian([s[n] for s in shots])) for n in names}
 
 
 @pytest.fixture(scope="session")

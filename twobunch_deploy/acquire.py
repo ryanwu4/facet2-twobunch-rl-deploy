@@ -29,7 +29,7 @@ NEITHER_RUN = 5         # frames: a run of at least this many frames tagged neit
 class Capture(NamedTuple):
     camera: dict            # the camera readbacks, read just before the frames (machine.camera_settings)
     frames: list            # every frame published during the capture (machine.Frame)
-    updates: list           # every update of the TCAV readbacks and the L1 and L2 PVs during the capture (machine.Update)
+    updates: list           # every update of the TCAV readbacks and L1 and L2 PVs during the capture (machine.Update)
     amplitude: np.ndarray   # each frame's TCAV amplitude (MV); nan if no update has its pulse (readback)
     phase: np.ndarray       # each frame's TCAV phase (deg); likewise
     tags: np.ndarray        # each frame's tag (tag)
@@ -64,8 +64,8 @@ def readback(frames: list, updates: list, name: str) -> np.ndarray:
 
 def summarise(updates: list, name: str) -> dict:
     """The updates of the PV `name` during a capture (S6, S7): how many, their median, the first (the PV's value when
-    the capture began: a monitor's first update is the current value) and the last, and how many read exactly 0. In
-    TEST_15668, FAST_PACT reads 0 on 0.6-0.8% of the shots (BSA dropouts), which barely move the median."""
+    the capture began: a monitor's first update is the current value) and the last, and how many read exactly 0 (a
+    BSA readback reads 0 for a missed shot: TEST_15668's FAST_PACT on 0.6-0.8% of them, which barely move a median)."""
     values = [u.value for u in updates if u.name == name]
     if not values:
         return {"updates": 0}

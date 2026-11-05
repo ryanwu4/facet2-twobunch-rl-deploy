@@ -461,8 +461,7 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
 def phases_test(seconds: float = 60) -> dict:
     """S6, S7: every update of the L1 and L2 PVs (pvs.L1, pvs.L2) during `seconds`, without the camera. For each PV,
     what step() records (acquire.summarise) with the standard deviation, minimum and maximum, the pulse-ID steps between
-    updates and the age of the first update (for a setpoint, the time since it was last written); for each L1 phase
-    readback, its median minus its setpoint's (pvs.L1_SETPOINTS).
+    updates and the age of the first update (for a setpoint, the time since it was last written).
 
     Saves the summary to data/<date>_S6/phases_test_<HHMMSS>.json and, next to it, every update (.npz) and each PV
     against time (viz.phases, .png).
@@ -475,7 +474,7 @@ def phases_test(seconds: float = 60) -> dict:
     with machine.updates(names) as updates:
         time.sleep(seconds)
     updates = list(updates)
-    summary = {"seconds": seconds, "pvs": {}, "readback - setpoint": {}}
+    summary = {"seconds": seconds, "pvs": {}}
     for name in names:
         summary["pvs"][name] = acquire.summarise(updates, name)
         mine = [u for u in updates if u.name == name]
@@ -484,9 +483,6 @@ def phases_test(seconds: float = 60) -> dict:
             summary["pvs"][name].update(
                 std=float(np.std(values)), min=float(min(values)), max=float(max(values)),
                 pulse_id_steps=pulse_id_steps([u.pulse_id for u in mine]), first_age_s=start - mine[0].timestamp)
-    for readback, setpoint in pvs.L1_SETPOINTS.items():
-        medians = [summary["pvs"][n].get("median") for n in (readback, setpoint)]
-        summary["readback - setpoint"][readback] = None if None in medians else medians[0] - medians[1]
     path = save_record("S6", "phases_test", summary)
     np.savez_compressed(path.with_suffix(".npz"), name=[u.name for u in updates],
                         pulse_id=[u.pulse_id for u in updates], timestamp=[u.timestamp for u in updates],

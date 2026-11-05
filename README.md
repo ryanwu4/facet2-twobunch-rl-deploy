@@ -16,7 +16,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | S3 | Background, processing, `peek()` |
 | S4 | TCAV readbacks and off / + / − tagging |
 | S5 | Row correction and step readings |
-| S6 | L1 klystron phases, amplitudes and setpoints |
+| S6 | L1 klystron phase setpoints |
 | S7 | L2 subbooster phases |
 | S8 | Bunch length and drift monitors |
 | S9 | v1 notebook assembled |

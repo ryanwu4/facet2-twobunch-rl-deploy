@@ -37,22 +37,17 @@ CAMERA_SETTINGS = {
 TCAV_AMPLITUDE = "TCAV:LI20:2400:A"
 TCAV_PHASE = "TCAV:LI20:2400:P"
 
-# L1: the LI11 klystrons 11 and 21, which a feedback moves together (Zack, 10-16) (S6). Monitored during each step's
-# capture. FAST_PACT and FAST_AACT are the DAQ's BSA names (BSA_List_S11RF), SSSB_PDES its nonBSA name
-# (nonBSA_List_LINAC_SBST; -18.03 deg throughout TEST_15668). PREQ, the absolute phase setpoint ops move L1 with
-# (Zack, 10-16), is in no DAQ.
+# L1: the LI11 klystrons 11 and 21 (S6). Monitored during each step's capture. PREQ is the absolute phase setpoint ops
+# move L1 with, and a feedback writes the same value to both (Zack, 10-16): on srv01 (11-04, by hand) it changed at
+# 5 Hz. It is in no DAQ. SSSB_PDES is the DAQ's subbooster phase setpoint (nonBSA_List_LINAC_SBST; -18.03 deg). The
+# phase and amplitude readbacks the DAQ records (FB:FAST_PACT, FB:FAST_AACT) gave no answer over Channel Access on
+# srv01: left out until their live names are known.
 L1 = {
-    "KLYS:LI11:11:FB:FAST_PACT": "L1 klystron 11 phase readback, deg",
-    "KLYS:LI11:21:FB:FAST_PACT": "L1 klystron 21 phase readback, deg",
-    "KLYS:LI11:11:FB:FAST_AACT": "L1 klystron 11 amplitude readback",
-    "KLYS:LI11:21:FB:FAST_AACT": "L1 klystron 21 amplitude readback",
     "KLYS:LI11:11:PREQ": "L1 klystron 11 phase setpoint, deg",
     "KLYS:LI11:21:PREQ": "L1 klystron 21 phase setpoint, deg",
     "KLYS:LI11:11:SSSB_PDES": "L1 klystron 11 subbooster phase setpoint, deg",
     "KLYS:LI11:21:SSSB_PDES": "L1 klystron 21 subbooster phase setpoint, deg",
 }
-# Each L1 phase readback and the setpoint it follows: phases_test() records their offset
-L1_SETPOINTS = {"KLYS:LI11:11:FB:FAST_PACT": "KLYS:LI11:11:PREQ", "KLYS:LI11:21:FB:FAST_PACT": "KLYS:LI11:21:PREQ"}
 
 # L2: the subbooster phase setpoints of sectors 11-14, and their phase readbacks (S7). The L2 multiknob moves LI12-14's
 # 1:1 (DAQ, 10-16). LI11's phases L2's klystrons 4-8 (F2_live_model) and the multiknob doesn't move it (0 throughout
