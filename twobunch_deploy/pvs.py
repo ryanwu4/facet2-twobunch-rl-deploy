@@ -54,12 +54,15 @@ L1 = {
 # Each L1 phase readback and the setpoint it follows: phases_test() records their offset
 L1_SETPOINTS = {"KLYS:LI11:11:FB:FAST_PACT": "KLYS:LI11:11:PREQ", "KLYS:LI11:21:FB:FAST_PACT": "KLYS:LI11:21:PREQ"}
 
-# L2: the subbooster phase setpoints of sectors 12-14, which the L2 multiknob moves 1:1 (DAQ, 10-16), and their phase
-# readbacks (S7). Monitored during each step's capture. The DAQ's nonBSA names (nonBSA_List_LINAC_SBST).
+# L2: the subbooster phase setpoints of sectors 11-14, and their phase readbacks (S7). The L2 multiknob moves LI12-14's
+# 1:1 (DAQ, 10-16). LI11's phases L2's klystrons 4-8 (F2_live_model) and the multiknob doesn't move it (0 throughout
+# TEST_15668). Monitored during each step's capture. The DAQ's nonBSA names (nonBSA_List_LINAC_SBST).
 L2 = {
+    "LI11:SBST:1:PDES": "LI11 subbooster phase setpoint, deg",
     "LI12:SBST:1:PDES": "LI12 subbooster phase setpoint, deg",
     "LI13:SBST:1:PDES": "LI13 subbooster phase setpoint, deg",
     "LI14:SBST:1:PDES": "LI14 subbooster phase setpoint, deg",
+    "LI11:SBST:1:PHAS": "LI11 subbooster phase readback, deg",
     "LI12:SBST:1:PHAS": "LI12 subbooster phase readback, deg",
     "LI13:SBST:1:PHAS": "LI13 subbooster phase readback, deg",
     "LI14:SBST:1:PHAS": "LI14 subbooster phase readback, deg",

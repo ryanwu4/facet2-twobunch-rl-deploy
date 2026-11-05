@@ -195,8 +195,9 @@ def step(record: dict, medians: dict, updates: list):
     l1.set_xlabel("time from the first frame (s), by timestamp")
     l1.set_ylabel("L1 phase readback (deg)")
     l1.legend(fontsize=8, ncol=2)
-    l1.set_title("\n".join("; ".join(f"{name} {changed(record['phases'][name])}" for name in names)
-                           for names in (pvs.L1_SETPOINTS.values(), pvs.L2)), fontsize=8)
+    lines = [pvs.L1_SETPOINTS.values()] + [[n for n in pvs.L2 if n.endswith(kind)] for kind in (":PDES", ":PHAS")]
+    l1.set_title("\n".join("; ".join(f"{name} {changed(record['phases'][name])}" for name in names) for names in lines),
+                 fontsize=8)
 
     r = record["reading"]
     failed = [name for name, ok in record["checks"].items() if not ok]

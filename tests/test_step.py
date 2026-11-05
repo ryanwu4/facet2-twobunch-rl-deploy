@@ -300,8 +300,11 @@ def test_step(replay, tmp_path, monkeypatch):
     for sign in ("+", "-"):
         np.testing.assert_array_equal(r.medians[sign], expected.medians[sign])
     l1 = l1_readbacks()
-    for name, value in constant_values().items():                # S6, S7: one update each, on subscribing
-        assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value, "zeros": 0}
+    constants = constant_values()
+    assert 0.0 in constants.values()                              # LI11:SBST:1:PDES, 0 in the DAQ
+    for name, value in constants.items():                         # S6, S7: one update each, on subscribing
+        assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value,
+                                            "zeros": int(value == 0)}
     for name in next(iter(l1.values())):                          # one per frame with a shot
         values = [l1[p][name] for p in frame_ids if p in l1]
         assert r.record["phases"][name] == {"updates": len(values), "median": np.median(values), "first": values[0],
