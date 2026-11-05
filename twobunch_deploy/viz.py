@@ -4,7 +4,8 @@ S2  geometry(): a full frame as the ops display orients it, with the hand crop o
 S3  background(): a background and its brightest frame; peek(): one frame through the processing, with its energy
     cut and band statistics
 S5  step(): one step's median frames, each frame's drive-witness offset, and the TCAV readbacks and tags; S6, S7 add
-    the L1 phase setpoints and the L2 subbooster phase setpoints during the step, and the other L1 and L2 PVs as text
+    the L1 phase readbacks and setpoints and the L2 subbooster phase setpoints during the step, and the other L1 and
+    L2 PVs as text
 S6  phases(): each L1 and L2 PV against time
 """
 from __future__ import annotations
@@ -18,7 +19,9 @@ from .session import PULSE_ID_PERIOD, PULSES_PER_SECOND
 DRIVE, WITNESS, CUT = "#eb6834", "#2a9df4", "#1fc7b6"
 # TCAV tags (acquire.tag): colour and marker; frames tagged "unmatched" have no readback to plot
 TAGS = {"+": ("#2a78d6", "^"), "-": ("#e87ba4", "v"), "neither": ("#eda100", "o"), "off": ("#555555", "s")}
-L1_COLOURS = ("#1b9e77", "#7570b3")     # klystrons 11 and 21
+# klystrons 11 and 21: colour, the readback's marker (hollow and of different sizes, as they overlap) and its size, and
+# the setpoint's line style
+L1_STYLES = (("#1b9e77", "o", 7, "--"), ("#7570b3", "s", 4, ":"))
 # the LI12, LI13 and LI14 subboosters: colour and marker, hollow and of different sizes, as they move together
 L2_STYLES = (("#d95f02", "o", 9), ("#e7298a", "s", 6), ("#66a61e", "^", 4))
 
@@ -121,10 +124,11 @@ def step(record: dict, medians: dict, updates: list):
     witness x centroids. Second: each + and - frame's x_d - x_w, kept frames filled and dropped ones hollow, each
     polarity's median of the kept frames as a line. Third: each frame's TCAV amplitude and phase readback by tag,
     unmatched frames as x on the time axis. Time from the capture's first frame, by pulse ID; the dropped frames'
-    spans shaded. Fourth: every update of the two L1 phase setpoints (PREQ) by its timestamp (one from before the first
-    frame, as a monitor's first update can be, at 0), their medians as lines, exact zeros off the axis. Bottom: every
-    update of the LI12-14 subbooster phase setpoints (PDES) the same way, each minus its median. The other L1 and L2 PVs
-    as text, first -> last if they changed."""
+    spans shaded. Fourth: every update of the two L1 phase readbacks (FAST_PACTBR) by its timestamp (one from before
+    the first frame, as a monitor's first update can be, at 0), their medians as lines, exact zeros off the axis, and
+    the two phase setpoints (PREQ) as steps. Bottom: every update of the LI12-14 subbooster phase setpoints (PDES) the
+    same way, each minus its median. The other L1 and L2 PVs as text: setpoints first -> last if they changed, the
+    amplitude readbacks' medians."""
     frames = record["per_frame"]
     pulse_ids = np.array(frames["pulse_id"])
     t = (pulse_ids - pulse_ids[0]) % PULSE_ID_PERIOD / PULSES_PER_SECOND
@@ -186,23 +190,30 @@ def step(record: dict, medians: dict, updates: list):
             ax.axvspan(t[i] - 0.05, t[i] + 0.05, color="0.85", lw=0)
         ax.set_xlabel("time from the first frame (s)")
 
+    pact = [name for name in pvs.L1 if name.endswith(":FAST_PACTBR")]
     preq = [name for name in pvs.L1 if name.endswith(":PREQ")]
-    for name, colour in zip(preq, L1_COLOURS):
-        s = record["phases"][name]
-        mine = [u for u in updates if u.name == name]
+    for readback, setpoint, (colour, marker, size, dashes) in zip(pact, preq, L1_STYLES):
+        s = record["phases"][readback]
+        mine = [u for u in updates if u.name == readback]
         t_update = [max(u.timestamp - frames["timestamp"][0], 0) for u in mine]
-        l1.plot(t_update, [u.value for u in mine], ".", color=colour, ms=3,
-                label=f"{name}: {s['updates']} updates, {s.get('zeros', 0)} exact zeros")
+        l1.plot(t_update, [u.value for u in mine], marker, color=colour, mfc="none", ms=size, ls="none",
+                label=f"{readback}: {s['updates']} updates, {s.get('zeros', 0)} exact zeros")
         if "median" in s:
             l1.axhline(s["median"], color=colour, lw=1.2)
-    nonzero = [u.value for u in updates if u.name in preq and u.value != 0]
+        mine = [u for u in updates if u.name == setpoint]
+        t_update = [max(u.timestamp - frames["timestamp"][0], 0) for u in mine]
+        l1.plot(t_update, [u.value for u in mine], dashes, color=colour, lw=1, drawstyle="steps-post",
+                label=f"{setpoint}: {len(mine)} updates")
+    nonzero = [u.value for u in updates if u.name in pact + preq and u.value != 0]
     if nonzero:
         l1.set_ylim(min(nonzero) - 0.1, max(nonzero) + 0.1)
     l1.set_xlabel("time from the first frame (s), by timestamp")
-    l1.set_ylabel("L1 phase setpoint (deg)")
+    l1.set_ylabel("L1 phase (deg)")
     l1.legend(fontsize=8, ncol=2)
-    l1.set_title("; ".join(f"{name} {changed(record['phases'][name])}" for name in pvs.L1 if name not in preq),
-                 fontsize=8)
+    setpoints = [f"{name} {changed(record['phases'][name])}" for name in pvs.L1 if name.endswith(":SSSB_PDES")]
+    amplitudes = [f"{name} median {record['phases'][name].get('median', np.nan):.4f}" for name in pvs.L1
+                  if name.endswith(":FAST_AACTBR")]
+    l1.set_title("; ".join(setpoints) + "\n" + "; ".join(amplitudes), fontsize=8)
 
     # The subbooster setpoints the L2 multiknob moves, each minus its median: on 11-04 they sat about 2 deg apart and
     # moved together by about 0.05 deg. LI11's (0; the multiknob doesn't move it) and the readbacks go in the title.

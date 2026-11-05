@@ -80,9 +80,11 @@ def tcav_readbacks() -> dict:
     return {int(p): (float(a), float(ph)) for p, a, ph in zip(pulse_id[here], amplitude[here], phase[here])}
 
 
-# The PREQs are in no DAQ, and on srv01 a feedback changed them at 5 Hz (11-04). The soft IOC serves each station's
-# phase readback in the DAQ (FAST_PACT, BSA_List_S11RF) of each frame's shot in their place.
-PREQ_STAND_IN = {name: name.replace(":PREQ", ":FB:FAST_PACT") for name in pvs.L1 if name.endswith(":PREQ")}
+# The L1 PVs the soft IOC serves per shot, and the DAQ PV (BSA_List_S11RF) whose value at each frame's shot it serves:
+# for the beam-rate readbacks (FAST_PACTBR, FAST_AACTBR) the DAQ's own record of them (FAST_PACT, FAST_AACT); for the
+# PREQs, which are in no DAQ and on srv01 changed once per shot (11-05), their station's FAST_PACT as a stand-in.
+PER_SHOT = {**{name: name.removesuffix("BR") for name in pvs.L1 if name.endswith("BR")},
+            **{name: name.replace(":PREQ", ":FB:FAST_PACT") for name in pvs.L1 if name.endswith(":PREQ")}}
 
 
 def shot_values(names: list[str], daq_list: str) -> dict:
@@ -97,16 +99,16 @@ def shot_values(names: list[str], daq_list: str) -> dict:
     return {int(p): {name: float(v[i]) for name, v in values.items()} for i, p in enumerate(pulse_id[here])}
 
 
-def preq_values() -> dict:
-    """The soft IOC's PREQs (PREQ_STAND_IN) at the shots of its step, by pulse ID: {pulse ID: {PREQ: value}}."""
-    shots = shot_values(list(PREQ_STAND_IN.values()), "BSA_List_S11RF")
-    return {p: {preq: v[pact] for preq, pact in PREQ_STAND_IN.items()} for p, v in shots.items()}
+def per_shot_values() -> dict:
+    """The soft IOC's PER_SHOT PVs at the shots of its step, by pulse ID: {pulse ID: {PV: value}}."""
+    shots = shot_values(sorted(set(PER_SHOT.values())), "BSA_List_S11RF")
+    return {p: {name: v[daq] for name, daq in PER_SHOT.items()} for p, v in shots.items()}
 
 
 def constant_values() -> dict:
-    """The value the soft IOC serves throughout for each L1 and L2 PV but the PREQs: the step's median in the DAQ
+    """The value the soft IOC serves throughout for each L1 and L2 PV not in PER_SHOT: the step's median in the DAQ
     (nonBSA_List_LINAC_SBST)."""
-    names = [n for n in [*pvs.L1, *pvs.L2] if n not in PREQ_STAND_IN]
+    names = [n for n in [*pvs.L1, *pvs.L2] if n not in PER_SHOT]
     shots = shot_values(names, "nonBSA_List_LINAC_SBST").values()
     return {n: float(np.nanmedian([s[n] for s in shots])) for n in names}
 
