@@ -162,11 +162,20 @@ def test_step_figure():
     updates = [machine.Update(name, 36 * i, 100 + 0.1 * i, -23.5 + 0.1 * i if i % 3 else 0.0)
                for i in range(4) for name in names[:2]] + [machine.Update(name, 0, 50.0, -20.0) for name in names[2:]]
     updates.append(machine.Update(names[-1], 72, 100.2, -19.0))                  # a change: drawn first -> last
+    moved = ["LI12:SBST:1:PDES", "LI13:SBST:1:PDES", "LI14:SBST:1:PDES"]
+    updates += [machine.Update(name, 36 * i, 100 + 0.1 * i, value) for name in moved
+                for i, value in ((1, -19.5), (2, -20.5))]                          # median -20, as the first
     record["phases"] = {name: acquire.summarise(updates, name) for name in names}
     fig = viz.step(record, {"+": r.medians["+"]}, updates)
-    assert len(fig.axes) == 6
-    labels = fig.axes[-1].get_legend_handles_labels()[1]            # the L1 panel plots the two PREQs
+    assert len(fig.axes) == 7
+    l1, l2 = fig.axes[-2:]
+    labels = l1.get_legend_handles_labels()[1]                      # the L1 panel plots the two PREQs
     assert [label.split(":")[3] for label in labels] == ["PREQ", "PREQ"]
+    assert l1.get_title() == "KLYS:LI11:11:SSSB_PDES -20.000; KLYS:LI11:21:SSSB_PDES -20.000"
+    assert [label.split(": ")[0] for label in l2.get_legend_handles_labels()[1]] == moved
+    assert [list(line.get_ydata()) for line in l2.get_lines()[:3]] == [[0, 0.5, -0.5]] * 3     # minus the median
+    pdes, phas = l2.get_title().split("\n")
+    assert pdes == "LI11:SBST:1:PDES -20.000" and phas.endswith("LI14:SBST:1:PHAS -20.000 -> -19.000")
     assert viz.changed(record["phases"][names[-1]]) == "-20.000 -> -19.000"
     assert viz.changed(record["phases"][names[-2]]) == "-20.000" and viz.changed({"updates": 0}) == "no update"
 
