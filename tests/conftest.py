@@ -120,9 +120,15 @@ def constant_values() -> dict:
 
 
 def magnet_values(mat: Path = MAT) -> dict:
-    """Each magnet supply's median over a DAQ run (nonBSA_List_S20Magnets; TEST_15668's for the soft IOC)."""
-    magnets = scipy.io.loadmat(mat, simplify_cells=True)["data_struct"]["scalars"]["nonBSA_List_S20Magnets"]
-    return {n: float(np.nanmedian(np.asarray(magnets[n.replace(":", "_")], float))) for n in pvs.MAGNETS}
+    """Each magnet supply's median over a DAQ run (nonBSA_List_S20Magnets, or nonBSA_List_S19 for the LI19 quads;
+    TEST_15668's for the soft IOC)."""
+    scalars = scipy.io.loadmat(mat, simplify_cells=True)["data_struct"]["scalars"]
+    values = {}
+    for name in pvs.MAGNETS:
+        key = name.replace(":", "_")
+        magnets = scalars["nonBSA_List_S20Magnets" if key in scalars["nonBSA_List_S20Magnets"] else "nonBSA_List_S19"]
+        values[name] = float(np.nanmedian(np.asarray(magnets[key], float)))
+    return values
 
 
 @pytest.fixture(scope="session")

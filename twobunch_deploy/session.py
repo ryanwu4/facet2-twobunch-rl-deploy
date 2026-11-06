@@ -601,7 +601,8 @@ def monitor_test(stage: str, name: str, names: list[str], seconds: float) -> dic
 
 def optics_test() -> dict:
     """S8: one read of each magnet supply (pvs.MAGNETS) against its value in the DAQ runs (pvs.MAGNETS_IN_DAQ): the
-    live value, the DAQ's, and the difference in percent of the DAQ's; None for a supply that doesn't answer.
+    live value, the DAQ's, and the difference, in the supply's units and in percent of the DAQ's (large for the
+    correctors, which sit near 0); None for a supply that doesn't answer.
 
     Saves the summary to data/<date>_S8/optics_test_<HHMMSS>.json.
     """
@@ -611,6 +612,7 @@ def optics_test() -> dict:
     for name, m in machine.describe(list(pvs.MAGNETS)).items():
         daq = pvs.MAGNETS_IN_DAQ[name]
         summary[name] = None if m is None else {"value": m["value"], "daq": daq, "units": m["units"],
+                                                "difference": m["value"] - daq,
                                                 "difference_pct": 100 * (m["value"] - daq) / abs(daq)}
     save_record("S8", "optics_test", summary)
     return summary

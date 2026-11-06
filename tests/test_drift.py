@@ -22,12 +22,13 @@ def test_pvs():
 
 @pytest.mark.parametrize("run", ["TEST_15668", "E300_15671", "E300_15673"])
 def test_magnets_in_daq(run):
-    """pvs.MAGNETS_IN_DAQ is each supply's median in TEST_15668, and the other two runs agree within 0.01%."""
+    """pvs.MAGNETS_IN_DAQ is each supply's median in TEST_15668, and the other two runs agree within 0.01%, the
+    correctors (near 0) within 2e-5."""
     mat = XTCAV / run / f"{run}.mat"
     if not mat.exists():
         pytest.skip(f"needs {mat}")
     for name, value in magnet_values(mat).items():
-        assert abs(pvs.MAGNETS_IN_DAQ[name] - value) <= 1e-4 * abs(value), name
+        assert abs(pvs.MAGNETS_IN_DAQ[name] - value) <= max(1e-4 * abs(value), 2e-5), name
 
 
 @needs_daq
@@ -70,7 +71,8 @@ def test_optics_test(replay, tmp_path, monkeypatch):
     assert list(summary) == list(pvs.MAGNETS)
     for name, s in summary.items():
         assert s["value"] == served[name] and s["daq"] == pvs.MAGNETS_IN_DAQ[name]
-        assert s["difference_pct"] == 100 * (served[name] - s["daq"]) / abs(s["daq"])
-        assert abs(s["difference_pct"]) < 1e-4
+        assert s["difference"] == served[name] - s["daq"]
+        assert s["difference_pct"] == 100 * s["difference"] / abs(s["daq"])
+        assert abs(s["difference"]) <= 5e-5                       # MAGNETS_IN_DAQ's rounding
     [record] = tmp_path.glob("*_S8/optics_test_*.json")
     assert json.loads(record.read_text()) == json.loads(json.dumps(summary))

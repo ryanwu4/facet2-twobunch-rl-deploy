@@ -100,19 +100,32 @@ DRIFT = {
     "LI14:KLYS:51:AMPL": "LI14 klystron 5 amplitude readback",
 }
 
-# Magnets (S8), read once at the start of each step and by optics_test(): the supply readbacks of the final-focus and
-# spectrometer quads and of the BC20 chicane sextupoles (F2_live_model's unaliased-elements.csv names those), the DAQ's
-# names (nonBSA_List_S20Magnets). Which supply drives which quad isn't settled (some drive two: twobunch-s2e-rl,
-# xtcav_tier1_configs.py), so optics_test() compares them supply by supply with the DAQ (MAGNETS_IN_DAQ).
+# Magnets (S8), read once at the start of each step and by optics_test(): supply readbacks (BACT), under the DAQ's
+# names (nonBSA_List_S20Magnets, nonBSA_List_S19).
+# - The final-focus and spectrometer quads (kG), named as in F2_live_model's unaliased-elements.csv. The DAQ values
+#   bear that map out: each supply is within 0.6% of its magnet's golden strength (twobunch-s2e-rl,
+#   xtcav_tier1_configs.py), Q0D and Q2D trimmed 5.6% together.
+# - The spectrometer dipole B5D36 (GeV/c), which sets the energy axis on DTOTR2 (xtcav_tier1_configs.py's supply).
+# - The final-focus steering correctors and the BC20 chicane sextupoles (S3EL and S3ER are two magnets each), knobs of
+#   the two-bunch campaign (sweep_params.py); the sextupoles named as in unaliased-elements.csv.
+# - The two LI19 quads that launch into BC20.
 MAGNETS = {
-    "LI20:LGPS:3011:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3031:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3091:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3141:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3151:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3204:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3261:BACT": "final-focus or spectrometer quad supply",
-    "LI20:LGPS:3311:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3011:BACT": "Q5FF supply, kG",
+    "LI20:LGPS:3311:BACT": "Q4FF supply, kG",
+    "LI20:LGPS:3151:BACT": "Q3FF supply, kG",
+    "LI20:LGPS:1910:BACT": "Q2FF supply, kG",
+    "LI20:LGPS:3204:BACT": "Q1FF supply, kG",
+    "LI20:LGPS:3031:BACT": "Q0FF supply, kG",
+    "LI20:LGPS:3141:BACT": "Q0D supply, kG",
+    "LI20:LGPS:3261:BACT": "Q1D supply, kG",
+    "LI20:LGPS:3091:BACT": "Q2D supply, kG",
+    "LI20:LGPS:3330:BACT": "B5D36 supply, GeV/c",
+    "LI20:XCOR:3026:BACT": "XC1FF corrector",
+    "LI20:XCOR:3086:BACT": "XC3FF corrector",
+    "LI20:YCOR:3017:BACT": "YC1FF corrector",
+    "LI20:YCOR:3057:BACT": "YC2FF corrector",
+    "QUAD:LI19:851:BACT": "LI19 quad 851, BC20 launch",
+    "QUAD:LI19:871:BACT": "LI19 quad 871, BC20 launch",
     "LI20:LGPS:2145:BACT": "sextupole S1EL supply",
     "LI20:LGPS:2165:BACT": "sextupole S2EL supply",
     "LI20:LGPS:2195:BACT": "sextupoles S3EL supply",
@@ -120,17 +133,25 @@ MAGNETS = {
     "LI20:LGPS:2335:BACT": "sextupole S2ER supply",
     "LI20:LGPS:2365:BACT": "sextupole S1ER supply",
 }
-# Each supply's median in TEST_15668 (nonBSA_List_S20Magnets); E300_15671 and E300_15673 agree within 0.01%
+# Each supply's median in TEST_15668. E300_15671 and E300_15673 agree within 0.01%, the correctors within 2e-5
 # (tests/test_drift.py).
 MAGNETS_IN_DAQ = {
     "LI20:LGPS:3011:BACT": -72.1891,
-    "LI20:LGPS:3031:BACT": 125.983,
-    "LI20:LGPS:3091:BACT": -115.8243,
-    "LI20:LGPS:3141:BACT": -115.825,
-    "LI20:LGPS:3151:BACT": 99.2317,
-    "LI20:LGPS:3204:BACT": -234.5114,
-    "LI20:LGPS:3261:BACT": 180.6918,
     "LI20:LGPS:3311:BACT": -81.2477,
+    "LI20:LGPS:3151:BACT": 99.2317,
+    "LI20:LGPS:1910:BACT": 125.909,
+    "LI20:LGPS:3204:BACT": -234.5114,
+    "LI20:LGPS:3031:BACT": 125.983,
+    "LI20:LGPS:3141:BACT": -115.825,
+    "LI20:LGPS:3261:BACT": 180.6918,
+    "LI20:LGPS:3091:BACT": -115.8243,
+    "LI20:LGPS:3330:BACT": 10.000571,
+    "LI20:XCOR:3026:BACT": 0.072774,
+    "LI20:XCOR:3086:BACT": 0.021586,
+    "LI20:YCOR:3017:BACT": 0.0849,
+    "LI20:YCOR:3057:BACT": -0.039703,
+    "QUAD:LI19:851:BACT": -63.763686,
+    "QUAD:LI19:871:BACT": 42.499735,
     "LI20:LGPS:2145:BACT": 1400.0248,
     "LI20:LGPS:2165:BACT": -3199.927,
     "LI20:LGPS:2195:BACT": -1150.0273,
