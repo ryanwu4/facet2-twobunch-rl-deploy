@@ -1,6 +1,7 @@
 """Frames for one measurement step (S4): every DTOTR2 frame of a capture with the TCAV amplitude and phase readbacks of
 its pulse, each frame tagged off / + / -, and the + and - frames right after each polarity window began marked to
-drop. S6, S7: every update of the L1 and L2 PVs during the same capture, and a summary of each.
+drop. S6, S7, S8: every update of the L1, L2, bunch-length and drift PVs during the same capture, and a summary of
+each.
 
 The tags are Yiheng Ye's classify_tcav_shots (xtcav.py, after D. Storey's plot_TCAV.m), which the deployed analysis
 used. The readbacks don't show the TCAV's off windows as off. Ryan Loney's XTCAV toggler, whose pattern the DAQ runs
@@ -24,12 +25,15 @@ AMPLITUDE_TOL = 0.25    # MV: + and - frames are within this of that first mean
 PHASE_TOL = 1.0         # deg: + frames are within this of +90, - frames of -90
 OFF_DIP = 0.5           # MV: off frames are more than this below the mean amplitude of the + and - frames
 NEITHER_RUN = 5         # frames: a run of at least this many frames tagged neither ends a polarity window (dropped)
+# monitored with the TCAV readbacks during every capture: the L1 and L2 phase PVs (S6, S7) and the bunch-length and
+# drift PVs (S8)
+MONITORED = [*pvs.L1, *pvs.L2, *pvs.BLEN, *pvs.DRIFT]
 
 
 class Capture(NamedTuple):
     camera: dict            # the camera readbacks, read just before the frames (machine.camera_settings)
     frames: list            # every frame published during the capture (machine.Frame)
-    updates: list           # every update of the TCAV readbacks and L1 and L2 PVs during the capture (machine.Update)
+    updates: list           # every update of the TCAV readbacks and MONITORED during the capture (machine.Update)
     amplitude: np.ndarray   # each frame's TCAV amplitude (MV); nan if no update has its pulse (readback)
     phase: np.ndarray       # each frame's TCAV phase (deg); likewise
     tags: np.ndarray        # each frame's tag (tag)
@@ -38,10 +42,10 @@ class Capture(NamedTuple):
 
 def capture(seconds: float, drop_s: float = 1.0) -> Capture:
     """The camera readbacks, then every frame published during the next `seconds` with the TCAV readbacks of its
-    pulse; each frame tagged, and the frames to drop after each flip marked. The L1 and L2 PVs (pvs.L1, pvs.L2) are
-    monitored alongside (summarise)."""
+    pulse; each frame tagged, and the frames to drop after each flip marked. The PVs in MONITORED are monitored
+    alongside (summarise)."""
     camera = machine.camera_settings()
-    with machine.updates([pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE, *pvs.L1, *pvs.L2]) as updates:
+    with machine.updates([pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE, *MONITORED]) as updates:
         frames = machine.frames(seconds)
     updates = list(updates)
     amplitude, phase = (readback(frames, updates, name) for name in (pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE))
@@ -63,14 +67,23 @@ def readback(frames: list, updates: list, name: str) -> np.ndarray:
 
 
 def summarise(updates: list, name: str) -> dict:
-    """The updates of the PV `name` during a capture (S6, S7): how many, their median, the first (the PV's value when
-    the capture began: a monitor's first update is the current value) and the last, and how many read exactly 0 (a
-    BSA readback reads 0 for a missed shot: TEST_15668's FAST_PACT on 0.6-0.8% of them, which barely move a median)."""
+    """The updates of the PV `name` during a capture (S6, S7, S8): how many, the median of the finite ones (None if
+    none is), the first (the PV's value when the capture began: a monitor's first update is the current value) and the
+    last (None if NaN), and how many read exactly 0 and how many NaN. A BSA PV reads 0 for a missed shot (TEST_15668's
+    FAST_PACT on 0.6-0.8% of them, which barely move a median), and the DAQ records NaN for a shot without a value (its
+    BLEN:IN10:596 on 57% of them)."""
     values = [u.value for u in updates if u.name == name]
     if not values:
         return {"updates": 0}
-    return {"updates": len(values), "median": float(np.median(values)), "first": float(values[0]),
-            "last": float(values[-1]), "zeros": values.count(0)}
+    finite = [v for v in values if np.isfinite(v)]
+    return {"updates": len(values), "median": float(np.median(finite)) if finite else None,
+            "first": number(values[0]), "last": number(values[-1]), "zeros": values.count(0),
+            "nans": len(values) - len(finite)}
+
+
+def number(value: float) -> float | None:
+    """`value` for a JSON record: a float, or None for NaN."""
+    return None if np.isnan(value) else float(value)
 
 
 def tag(amplitude: np.ndarray, phase: np.ndarray) -> np.ndarray:

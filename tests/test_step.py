@@ -12,8 +12,8 @@ import h5py
 import numpy as np
 import pytest
 
-from conftest import (MODES, V7, XTCAV, YIHENG, constant_values, daq, needs_daq, needs_v7, pil_crop, per_shot_values,
-                      tcav_readbacks)
+from conftest import (DRIFT_STAND_IN, MODES, V7, XTCAV, YIHENG, constant_values, daq, magnet_values, needs_daq,
+                      needs_v7, pil_crop, per_shot_values, tcav_readbacks)
 from twobunch_deploy import acquire, machine, pvs, screen, session, viz
 
 X = screen.x_positions(30.5)
@@ -166,9 +166,14 @@ def test_step_figure():
     updates += [machine.Update(name, 36 * i, 100 + 0.1 * i, value) for name in moved
                 for i, value in ((1, -19.5), (2, -20.5))]                          # median -20, as the first
     record["phases"] = {name: acquire.summarise(updates, name) for name in names}
+    updates += [machine.Update(name, 36 * i, 100 + 0.1 * i, value) for name in pvs.BLEN
+                for i, value in enumerate((1000.0, 1250.0, 0.0, 750.0, 1000.0))]    # median 1000, a zero left out
+    updates += [machine.Update(name, 0, 50.0, value) for name, value in DRIFT_STAND_IN.items()]
+    updates.append(machine.Update("LI14:KLYS:51:PDES", 72, 100.2, 0.0))          # a change: drawn first -> last
+    record["drift"] = {name: acquire.summarise(updates, name) for name in [*pvs.BLEN, *pvs.DRIFT]}
     fig = viz.step(record, {"+": r.medians["+"]}, updates)
-    assert len(fig.axes) == 7
-    l1, l2 = fig.axes[-2:]
+    assert len(fig.axes) == 8
+    l1, l2, blen = fig.axes[-3:]
     labels = l1.get_legend_handles_labels()[1]                      # each phase readback, then its setpoint
     assert [label.split(": ")[0] for label in labels] == ["KLYS:LI11:11:FB:FAST_PACTBR", "KLYS:LI11:11:PREQ",
                                                          "KLYS:LI11:21:FB:FAST_PACTBR", "KLYS:LI11:21:PREQ"]
@@ -177,11 +182,17 @@ def test_step_figure():
         assert list(lines[name].get_ydata()) == [u.value for u in updates if u.name == name]
     setpoints, amplitudes = l1.get_title().split("\n")
     assert setpoints == "KLYS:LI11:11:SSSB_PDES -20.000; KLYS:LI11:21:SSSB_PDES -20.000"
-    assert amplitudes == "KLYS:LI11:11:FB:FAST_AACTBR median -20.0000; KLYS:LI11:21:FB:FAST_AACTBR median -20.0000"
+    assert amplitudes == "KLYS:LI11:11:FB:FAST_AACTBR median -20; KLYS:LI11:21:FB:FAST_AACTBR median -20"
     assert [label.split(": ")[0] for label in l2.get_legend_handles_labels()[1]] == moved
     assert [list(line.get_ydata()) for line in l2.get_lines()[:3]] == [[0, 0.5, -0.5]] * 3     # minus the median
     pdes, phas = l2.get_title().split("\n")
     assert pdes == "LI11:SBST:1:PDES -20.000" and phas.endswith("LI14:SBST:1:PHAS -20.000 -> -19.000")
+    assert [label.split(": ")[0] for label in blen.get_legend_handles_labels()[1]] == ["BLEN:LI11:359:BRAWBR",
+                                                                                     "BLEN:LI14:888:BRAWBR"]
+    assert [list(line.get_ydata()) for line in blen.get_lines()[:2]] == [[0, 25, -25, 0]] * 2   # % from the median
+    title = blen.get_title()
+    assert "BLEN:IN10:596:BRAWBR median 1000" in title and "BLEN:LI20:3014:BRAWBR median 1000" in title
+    assert all(name in title for name in pvs.DRIFT) and "LI14:KLYS:51:PDES 111.000 -> 0.000" in title
     assert viz.changed(record["phases"][names[-1]]) == "-20.000 -> -19.000"
     assert viz.changed(record["phases"][names[-2]]) == "-20.000" and viz.changed({"updates": 0}) == "no update"
 
@@ -322,11 +333,18 @@ def test_step(replay, tmp_path, monkeypatch):
     assert 0.0 in constants.values()                              # LI11:SBST:1:PDES, 0 in the DAQ
     for name, value in constants.items():                         # S6, S7: one update each, on subscribing
         assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value,
-                                            "zeros": int(value == 0)}
+                                            "zeros": int(value == 0), "nans": 0}
     for name in next(iter(per_shot.values())):                    # one per frame with a shot
         values = [per_shot[p][name] for p in frame_ids if p in per_shot]
-        assert r.record["phases"][name] == {"updates": len(values), "median": np.median(values), "first": values[0],
-                                            "last": values[-1], "zeros": values.count(0)}
+        finite = [v for v in values if np.isfinite(v)]
+        kind = "drift" if name in pvs.BLEN else "phases"
+        assert r.record[kind][name] == {"updates": len(values), "median": np.median(finite),
+                                        "first": acquire.number(values[0]), "last": acquire.number(values[-1]),
+                                        "zeros": values.count(0), "nans": len(values) - len(finite)}
+    for name, value in DRIFT_STAND_IN.items():                   # S8: one update each, on subscribing
+        assert r.record["drift"][name] == {"updates": 1, "median": value, "first": value, "last": value, "zeros": 0,
+                                           "nans": 0}
+    assert r.record["magnets"] == magnet_values()
     assert len(frames["timestamp"]) == len(frame_ids) and np.all(np.diff(frames["timestamp"]) > 0)
     np.testing.assert_equal(json.loads(Path(r.path).read_text()), json.loads(json.dumps(r.record)))
     saved = np.load(Path(r.path).with_suffix(".npz"))

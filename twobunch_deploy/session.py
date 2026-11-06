@@ -2,7 +2,9 @@
 S1: capture_test() of the camera frames and pulse IDs. S2: geometry_test() of the camera settings and the
 hand crop. S3: backgrounds (take_background, pedestal, load_background), peek() and processing_test().
 S4: tcav_test() of the TCAV readbacks and tags; peek() shows the newest frame's tag. S5: step(). S6, S7: phases_test()
-of the L1 and L2 PVs; step() records them."""
+of the L1 and L2 PVs; step() records them. S8: drift_test() of the bunch-length and drift PVs and optics_test() of the
+magnets; step() records both. S9: check_pvs() and status() for the console; watch() and peek_strip() to look at the
+frames between steps."""
 from __future__ import annotations
 
 import datetime
@@ -245,20 +247,32 @@ def load_background(path: str | Path) -> Background:
 
 
 def peek(background: Background, seconds: float = 0.5) -> dict:
-    """S3: the newest frame through the processing, drawn with its energy cut and band statistics (viz.peek). S4:
-    with its TCAV tag and readbacks.
+    """S3: the newest frame through the processing, drawn with its energy cut and band statistics (newest). S4: with
+    its TCAV tag and readbacks.
 
-    Captures for `seconds` with the TCAV readbacks (acquire.capture) and takes the last frame. The cut is the frame's
-    own valley and the frame is not row-corrected: one frame has neither a step cut nor an off reference (step()
-    has both). Saves the summary to data/<date>_S3/peek_<HHMMSS>.json and, next to it, the raw frame and its hand
-    crop (.npz) and the figure (.png).
+    Captures for `seconds` with the TCAV readbacks (acquire.capture) and takes the last frame. Saves the summary to
+    data/<date>_S3/peek_<HHMMSS>.json and, next to it, the raw frame and its hand crop (.npz) and the figure (.png).
     """
     import numpy as np
-    from . import acquire, screen, viz
+    from . import acquire
 
     capture = acquire.capture(seconds)
     if not capture.frames:
         raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
+    summary, crop, fig = newest(capture, background)
+    path = save_record("S3", "peek", summary)
+    np.savez_compressed(path.with_suffix(".npz"), raw=capture.frames[-1].data, crop=crop)
+    fig.savefig(path.with_suffix(".png"))
+    return summary
+
+
+def newest(capture, background: Background):
+    """A capture's last frame through the processing, for peek() and watch(): its summary, its hand crop and its figure
+    (viz.peek). The cut is the frame's own valley and the frame is not row-corrected: one frame has neither a step cut
+    nor an off reference (step() has both)."""
+    import numpy as np
+    from . import screen, viz
+
     frame, camera = capture.frames[-1], capture.camera
     crop = screen.trained_frame(frame.data, camera)
     start = time.perf_counter()
@@ -273,15 +287,89 @@ def peek(background: Background, seconds: float = 0.5) -> dict:
                         "phase": None if np.isnan(phase) else phase},
                "background": background.path, "camera": camera, "processing_s": processing_s,
                "intensity": float(processed.sum()), "band_stats": stats}
-    path = save_record("S3", "peek", summary)
-    np.savez_compressed(path.with_suffix(".npz"), raw=frame.data, crop=crop)
     title = (f"DTOTR2, pulse ID {frame.pulse_id}, {summary['age_s']:.2f} s old; TCAV {capture.tags[-1]} "
              f"(A {amplitude:.2f} MV, P {phase:.2f} deg); own valley, no row correction\n"
              + ("no valley: no cut" if stats is None else
                 f"x_d - x_w {1e3 * (stats['x_d'] - stats['x_w']):.3f} mm, drive fraction {stats['frac_d']:.3f}, "
                 f"edge fraction {stats['edge_frac']:.4f}"))
-    fig = viz.peek(crop, processed, valley, stats, x, title)
-    fig.savefig(path.with_suffix(".png"))
+    return summary, crop, viz.peek(crop, processed, valley, stats, x, title)
+
+
+def watch(background: Background, seconds: float = 30, every_s: float = 1.0) -> list:
+    """S9: peek() about every `every_s` for `seconds`, each figure replacing the last in the notebook. Each look
+    captures 0.5 s, subscribing to the camera and the monitored PVs, so it takes longer than that. Holds the kernel
+    while it runs: only between steps.
+
+    Saves no frames: each look's pulse ID, TCAV tag, x_d - x_w (m) and drive fraction (None without a cut), to
+    data/<date>_S3/watch_<HHMMSS>.json. Returns the same list.
+    """
+    import matplotlib.pyplot as plt
+    from IPython.display import clear_output, display
+    from . import acquire
+
+    looks = []
+    end = time.time() + seconds
+    while time.time() < end:
+        start = time.time()
+        capture = acquire.capture(0.5)
+        if capture.frames:
+            summary, _, fig = newest(capture, background)
+            clear_output(wait=True)
+            display(fig)
+            plt.close(fig)
+            stats = summary["band_stats"]
+            looks.append({"pulse_id": summary["pulse_id"], "tag": summary["tcav"]["tag"],
+                          "x_d - x_w": None if stats is None else stats["x_d"] - stats["x_w"],
+                          "frac_d": None if stats is None else stats["frac_d"]})
+        time.sleep(max(0.0, every_s - (time.time() - start)))
+    save_record("S3", "watch", {"seconds": seconds, "every_s": every_s, "background": background.path,
+                                "looks": looks})
+    return looks
+
+
+def peek_strip(background: Background, seconds: float = 4, streak_um_per_deg: float | None = None) -> dict:
+    """S9: every frame of a `seconds` capture through the processing, each with its own valley as in peek(): the
+    frames as small images with their tags (viz.strip), and each + and - frame's x_d - x_w against time. Given
+    `streak_um_per_deg`, also one spacing from the newest + frame with a cut and the newest - frame, read at the +
+    frame's cut (screen.reading): one pair without row correction, so not the controller's reading, which takes the
+    medians of a step's frames (step()).
+
+    Saves the summary (each frame's pulse ID, tag, cut and band statistics) to data/<date>_S3/peek_strip_<HHMMSS>.json
+    and, next to it, every frame's hand crop, pulse ID and tag (.npz) and the figure (.png).
+    """
+    import numpy as np
+    from . import acquire, screen, viz
+
+    capture = acquire.capture(seconds)
+    if not capture.frames:
+        raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
+    x = screen.x_positions(capture.camera["RESOLUTION"])
+    crops = np.stack([screen.trained_frame(f.data, capture.camera) for f in capture.frames])
+    processed = [screen.process(crop, background.image) for crop in crops]
+    cuts = [screen.valley(image.sum(axis=1)).cut for image in processed]
+    stats = [None if cut is None else screen.band_stats(image, x, cut) for image, cut in zip(processed, cuts)]
+    pair = None
+    plus = [i for i, t in enumerate(capture.tags) if t == "+" and stats[i] is not None]
+    minus = [i for i, t in enumerate(capture.tags) if t == "-"]
+    if streak_um_per_deg is not None and plus and minus:
+        p, m = plus[-1], minus[-1]
+        at_cut = screen.band_stats(processed[m], x, cuts[p])
+        if at_cut is not None:
+            r = screen.reading([stats[p]], [at_cut], streak_um_per_deg)
+            pair = {"plus_pulse_id": capture.frames[p].pulse_id, "minus_pulse_id": capture.frames[m].pulse_id,
+                    "spacing_um": 1e6 * r["spacing"]}
+    pulse_ids = [f.pulse_id for f in capture.frames]
+    summary = {"seconds": seconds, "frames": len(capture.frames), "tags": dict(Counter(capture.tags)),
+               "background": background.path, "camera": capture.camera, "streak_um_per_deg": streak_um_per_deg,
+               "one_pair": pair, "per_frame": {"pulse_id": pulse_ids, "tag": [str(t) for t in capture.tags],
+                                               "cut": cuts, "band_stats": stats}}
+    path = save_record("S3", "peek_strip", summary)
+    np.savez_compressed(path.with_suffix(".npz"), crops=crops, pulse_id=pulse_ids, tag=capture.tags.astype(str))
+    t = [(pulse_id - pulse_ids[0]) % PULSE_ID_PERIOD / PULSES_PER_SECOND for pulse_id in pulse_ids]
+    title = (f"{len(capture.frames)} frames, own valleys, no row correction; "
+             + ("no spacing" if pair is None else
+                f"one pair's spacing {pair['spacing_um']:.1f} um (not the controller reading)"))
+    viz.strip(processed, capture.tags, stats, t, x, title).savefig(path.with_suffix(".png"))
     return summary
 
 
@@ -391,16 +479,18 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
 
     Without both polarities, an off frame or a cut the reading is invalid (its checks say which), but everything the
     frames allow is still computed and recorded. Saves data/<date>_S5/step_<HHMMSS>.json (the reading and its checks,
-    counts, the reference fit and its off frames' beam width, the summary of each L1 and L2 PV over the capture
-    (acquire.summarise), timing, peak memory, and each frame's pulse ID, timestamp, readbacks, tag, drop, intensity,
-    beam x RMS and band statistics) and .npz (every frame's hand crop with the same, every update, the reference and
-    the two median frames).
+    counts, the reference fit and its off frames' beam width, the summary of each L1 and L2 PV and each bunch-length
+    and drift PV over the capture (acquire.summarise), each magnet read just before it (None if it didn't answer),
+    timing, peak memory, and each frame's pulse ID, timestamp, readbacks, tag, drop, intensity, beam x RMS and band
+    statistics) and .npz (every frame's hand crop with the same, every update, the reference and the two median
+    frames).
     """
     import resource
     import numpy as np
-    from . import acquire, pvs, screen
+    from . import acquire, machine, pvs, screen
 
     start = time.perf_counter()
+    magnets = machine.describe(list(pvs.MAGNETS))
     capture = acquire.capture(seconds, drop_s)
     if not capture.frames:
         raise RuntimeError(f"no frame in {seconds} s: is the camera publishing?")
@@ -441,6 +531,8 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
             "cut_sens_um": 1e6 * r["cut_sens"]},
         "checks": read.checks, "valid": all(read.checks.values()),
         "phases": {name: acquire.summarise(capture.updates, name) for name in [*pvs.L1, *pvs.L2]},
+        "drift": {name: acquire.summarise(capture.updates, name) for name in [*pvs.BLEN, *pvs.DRIFT]},
+        "magnets": {name: None if m is None else m["value"] for name, m in magnets.items()},
         "timing_s": {"capture": captured - start, "reading": done - captured},
         "peak_memory_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
         "per_frame": {"pulse_id": [f.pulse_id for f in capture.frames],
@@ -459,33 +551,105 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
 
 
 def phases_test(seconds: float = 60) -> dict:
-    """S6, S7: every update of the L1 and L2 PVs (pvs.L1, pvs.L2) during `seconds`, without the camera. For each PV,
-    what step() records (acquire.summarise) with the standard deviation, minimum and maximum, the pulse-ID steps between
-    updates and the age of the first update (for a setpoint, the time since it was last written).
+    """S6, S7: every update of the L1 and L2 PVs (pvs.L1, pvs.L2) during `seconds`, without the camera (monitor_test).
+    Saves to data/<date>_S6/phases_test_<HHMMSS>."""
+    from . import pvs
 
-    Saves the summary to data/<date>_S6/phases_test_<HHMMSS>.json and, next to it, every update (.npz) and each PV
+    return monitor_test("S6", "phases_test", [*pvs.L1, *pvs.L2], seconds)
+
+
+def drift_test(seconds: float = 60) -> dict:
+    """S8: every update of the bunch-length and drift PVs (pvs.BLEN, pvs.DRIFT) during `seconds`, without the camera
+    (monitor_test). Saves to data/<date>_S8/drift_test_<HHMMSS>."""
+    from . import pvs
+
+    return monitor_test("S8", "drift_test", [*pvs.BLEN, *pvs.DRIFT], seconds)
+
+
+def monitor_test(stage: str, name: str, names: list[str], seconds: float) -> dict:
+    """Every update of the PVs `names` during `seconds`, without the camera. For each PV, what step() records
+    (acquire.summarise) with the standard deviation, minimum and maximum of the finite values, the pulse-ID steps
+    between updates and the age of the first update (for a setpoint, the time since it was last written).
+
+    Saves the summary to data/<date>_<stage>/<name>_<HHMMSS>.json and, next to it, every update (.npz) and each PV
     against time (viz.phases, .png).
     """
     import numpy as np
-    from . import acquire, machine, pvs, viz
+    from . import acquire, machine, viz
 
-    names = [*pvs.L1, *pvs.L2]
     start = time.time()
     with machine.updates(names) as updates:
         time.sleep(seconds)
     updates = list(updates)
     summary = {"seconds": seconds, "pvs": {}}
-    for name in names:
-        summary["pvs"][name] = acquire.summarise(updates, name)
-        mine = [u for u in updates if u.name == name]
+    for pv in names:
+        summary["pvs"][pv] = acquire.summarise(updates, pv)
+        mine = [u for u in updates if u.name == pv]
+        finite = [u.value for u in mine if np.isfinite(u.value)]
+        if finite:
+            summary["pvs"][pv].update(std=float(np.std(finite)), min=float(min(finite)), max=float(max(finite)))
         if mine:
-            values = [u.value for u in mine]
-            summary["pvs"][name].update(
-                std=float(np.std(values)), min=float(min(values)), max=float(max(values)),
-                pulse_id_steps=pulse_id_steps([u.pulse_id for u in mine]), first_age_s=start - mine[0].timestamp)
-    path = save_record("S6", "phases_test", summary)
+            summary["pvs"][pv].update(pulse_id_steps=pulse_id_steps([u.pulse_id for u in mine]),
+                                      first_age_s=start - mine[0].timestamp)
+    path = save_record(stage, name, summary)
     np.savez_compressed(path.with_suffix(".npz"), name=[u.name for u in updates],
                         pulse_id=[u.pulse_id for u in updates], timestamp=[u.timestamp for u in updates],
                         value=[u.value for u in updates])
     viz.phases(updates, names, start, seconds).savefig(path.with_suffix(".png"))
+    return summary
+
+
+def optics_test() -> dict:
+    """S8: one read of each magnet supply (pvs.MAGNETS) against its value in the DAQ runs (pvs.MAGNETS_IN_DAQ): the
+    live value, the DAQ's, and the difference, in the supply's units and in percent of the DAQ's (large for the
+    correctors, which sit near 0); None for a supply that doesn't answer.
+
+    Saves the summary to data/<date>_S8/optics_test_<HHMMSS>.json.
+    """
+    from . import machine, pvs
+
+    summary = {}
+    for name, m in machine.describe(list(pvs.MAGNETS)).items():
+        daq = pvs.MAGNETS_IN_DAQ[name]
+        summary[name] = None if m is None else {"value": m["value"], "daq": daq, "units": m["units"],
+                                                "difference": m["value"] - daq,
+                                                "difference_pct": 100 * (m["value"] - daq) / abs(daq)}
+    save_record("S8", "optics_test", summary)
+    return summary
+
+
+def check_pvs() -> dict:
+    """S9: one read of every PV in pvs.READ (machine.describe), for the start of a session: how many answer, which
+    don't, and each one's value (an array's first element), element count, units, host, alarm severity and age (seconds
+    since its timestamp: for a setpoint, since it was last written; for the gateway's PVs, since the gateway's update).
+
+    Saves the summary to data/<date>_S9/check_pvs_<HHMMSS>.json.
+    """
+    from . import machine, pvs
+
+    got = machine.describe(list(pvs.READ))
+    now = time.time()
+    summary = {"answered": sum(m is not None for m in got.values()), "pvs": len(got),
+               "missing": [name for name, m in got.items() if m is None],
+               "read": {name: None if m is None else {**m, "age_s": now - m["timestamp"]} for name, m in got.items()}}
+    save_record("S9", "check_pvs", summary)
+    return summary
+
+
+def status() -> dict:
+    """S9: today's session from its records on disk (data/<date>_*/), so it survives a kernel restart: how many
+    records and when the first and latest were saved, how many steps were taken and how many were valid, and the
+    latest step's path, reading, streak calibration and background."""
+    today = f"{datetime.date.today():%Y-%m-%d}"
+    records = sorted(DATA.glob(f"{today}_*/*.json"), key=lambda p: p.stat().st_mtime)
+    step_paths = sorted(DATA.glob(f"{today}_S5/step_*.json"))
+    steps = [json.loads(p.read_text()) for p in step_paths]
+    saved = [datetime.datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds") for p in records]
+    summary = {"date": today, "records": len(records), "first": saved[0] if saved else None,
+               "latest": saved[-1] if saved else None, "steps": len(steps),
+               "valid_steps": sum(step["valid"] for step in steps)}
+    if steps:
+        last = steps[-1]
+        summary["last_step"] = {"path": str(step_paths[-1]), "valid": last["valid"], "reading": last["reading"],
+                                "streak_um_per_deg": last["streak_um_per_deg"], "background": last["background"]}
     return summary
