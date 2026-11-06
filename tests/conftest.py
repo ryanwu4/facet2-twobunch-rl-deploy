@@ -1,9 +1,9 @@
-"""The soft IOC the Channel Access tests share (S1-S7), and the code and data the comparisons use.
+"""The soft IOC the Channel Access tests share (S1-S9), and the code and data the comparisons use.
 
-The soft IOC serves real DAQ frames, TCAV readbacks and L1 and L2 values, which are not in this public repo, so these
-tests run only where the TEST_15668 DTOTR2 files and the run's .mat are (DTOTR2_DAQ, default next to this repo) and
-are skipped in CI. So are the comparisons with Yiheng Ye's DAQ classes, twobunch-s2e-rl's online/features.py and its
-v7 replay, which need those next to this repo.
+The soft IOC serves real DAQ frames, TCAV readbacks, L1, L2, bunch-length and magnet values, which are not in this
+public repo, so these tests run only where the TEST_15668 DTOTR2 files and the run's .mat are (DTOTR2_DAQ, default
+next to this repo) and are skipped in CI. So are the comparisons with Yiheng Ye's DAQ classes, twobunch-s2e-rl's
+online/features.py and its v7 replay, which need those next to this repo.
 """
 import os
 import socket
@@ -80,37 +80,49 @@ def tcav_readbacks() -> dict:
     return {int(p): (float(a), float(ph)) for p, a, ph in zip(pulse_id[here], amplitude[here], phase[here])}
 
 
-# The L1 PVs the soft IOC serves per shot, and the DAQ PV (BSA_List_S11RF) whose value at each frame's shot it serves:
-# for the beam-rate readbacks (FAST_PACTBR, FAST_AACTBR) the DAQ's own record of them (FAST_PACT, FAST_AACT); for the
-# PREQs, which are in no DAQ and on srv01 changed once per shot (11-05), their station's FAST_PACT as a stand-in.
-PER_SHOT = {**{name: name.removesuffix("BR") for name in pvs.L1 if name.endswith("BR")},
-            **{name: name.replace(":PREQ", ":FB:FAST_PACT") for name in pvs.L1 if name.endswith(":PREQ")}}
+# The PVs the soft IOC serves per shot, and the DAQ list and PV whose value at each frame's shot it serves. For the
+# beam-rate L1 readbacks (FAST_PACTBR, FAST_AACTBR) and bunch-length signals (BRAWBR), the DAQ's own record of them
+# (FAST_PACT and FAST_AACT in BSA_List_S11RF; BRAW in the BSA list of the monitor's sector). For the PREQs, which are
+# in no DAQ and on srv01 changed at 5 Hz (11-05), their station's FAST_PACT as a stand-in.
+PER_SHOT = {**{name: ("BSA_List_S11RF", name.removesuffix("BR")) for name in pvs.L1 if name.endswith("BR")},
+            **{name: ("BSA_List_S11RF", name.replace(":PREQ", ":FB:FAST_PACT")) for name in pvs.L1
+               if name.endswith(":PREQ")},
+            **{name: ("BSA_List_S" + name.split(":")[1][-2:], name.removesuffix("BR")) for name in pvs.BLEN}}
+# The drift PVs are in none of TEST_15668's lists: the soft IOC serves each a different constant, so a test sees a PV
+# read under another's name.
+DRIFT_STAND_IN = {name: 100.0 + i for i, name in enumerate(pvs.DRIFT)}
 
 
-def shot_values(names: list[str], daq_list: str) -> dict:
-    """The DAQ's values of the PVs `names` from its list `daq_list` at the shots of the soft IOC's step, by pulse ID:
-    {pulse ID: {PV: value}}. The .mat names a PV with _ for each :."""
+def shot_values(daq_names: dict) -> dict:
+    """The DAQ's values at the shots of the soft IOC's step, by pulse ID: {pulse ID: {key: value}} for each key of
+    `daq_names`, {key: (DAQ list, PV)}. The .mat names a PV with _ for each :."""
     m = scipy.io.loadmat(MAT, simplify_cells=True)["data_struct"]
     shots = np.asarray(m["scalars"]["common_index"]) - 1
     images = m["images"]["DTOTR2"]
     pulse_id = np.asarray(images["pid"])[np.asarray(images["common_index"]) - 1]
     here = np.asarray(m["scalars"]["steps"])[shots] == STEP
-    values = {name: np.asarray(m["scalars"][daq_list][name.replace(":", "_")], float)[shots][here] for name in names}
-    return {int(p): {name: float(v[i]) for name, v in values.items()} for i, p in enumerate(pulse_id[here])}
+    values = {key: np.asarray(m["scalars"][daq_list][pv.replace(":", "_")], float)[shots][here]
+              for key, (daq_list, pv) in daq_names.items()}
+    return {int(p): {key: float(v[i]) for key, v in values.items()} for i, p in enumerate(pulse_id[here])}
 
 
 def per_shot_values() -> dict:
     """The soft IOC's PER_SHOT PVs at the shots of its step, by pulse ID: {pulse ID: {PV: value}}."""
-    shots = shot_values(sorted(set(PER_SHOT.values())), "BSA_List_S11RF")
-    return {p: {name: v[daq] for name, daq in PER_SHOT.items()} for p, v in shots.items()}
+    return shot_values(PER_SHOT)
 
 
 def constant_values() -> dict:
     """The value the soft IOC serves throughout for each L1 and L2 PV not in PER_SHOT: the step's median in the DAQ
     (nonBSA_List_LINAC_SBST)."""
     names = [n for n in [*pvs.L1, *pvs.L2] if n not in PER_SHOT]
-    shots = shot_values(names, "nonBSA_List_LINAC_SBST").values()
+    shots = shot_values({n: ("nonBSA_List_LINAC_SBST", n) for n in names}).values()
     return {n: float(np.nanmedian([s[n] for s in shots])) for n in names}
+
+
+def magnet_values(mat: Path = MAT) -> dict:
+    """Each magnet supply's median over a DAQ run (nonBSA_List_S20Magnets; TEST_15668's for the soft IOC)."""
+    magnets = scipy.io.loadmat(mat, simplify_cells=True)["data_struct"]["scalars"]["nonBSA_List_S20Magnets"]
+    return {n: float(np.nanmedian(np.asarray(magnets[n.replace(":", "_")], float))) for n in pvs.MAGNETS}
 
 
 @pytest.fixture(scope="session")

@@ -41,8 +41,8 @@ TCAV_PHASE = "TCAV:LI20:2400:P"
 # phase and amplitude readbacks the DAQ records as FB:FAST_PACT and FB:FAST_AACT: BSA PVs, read at beam rate with the
 # event definition's name (BR) appended (Zack, 11-05). On srv01 (11-05, by hand) they updated once per shot, with the
 # shot's pulse ID. PREQ is the absolute phase setpoint ops move L1 with; a feedback writes the same value to both
-# (Zack, 10-16), once per shot on srv01 (11-05). It is in no DAQ. SSSB_PDES is the DAQ's subbooster phase setpoint
-# (nonBSA_List_LINAC_SBST; -18.03 deg).
+# (Zack, 10-16), at 5 Hz on srv01 whatever the beam rate (11-05). It is in no DAQ. SSSB_PDES is the DAQ's subbooster
+# phase setpoint (nonBSA_List_LINAC_SBST; -18.03 deg).
 L1 = {
     "KLYS:LI11:11:FB:FAST_PACTBR": "L1 klystron 11 phase readback, deg",
     "KLYS:LI11:21:FB:FAST_PACTBR": "L1 klystron 21 phase readback, deg",
@@ -68,6 +68,77 @@ L2 = {
     "LI14:SBST:1:PHAS": "LI14 subbooster phase readback, deg",
 }
 
+# Bunch length (S8): the raw signals of the four bunch-length monitors, which the DAQ records as BSA PVs (BSA_List_S10,
+# S11, S14 and S20, as BLEN:...:BRAW), read at beam rate like the L1 readbacks. Monitored during each step's capture.
+# Their absolute counts aren't comparable across sessions, only their changes within one.
+BLEN = {
+    "BLEN:IN10:596:BRAWBR": "injector bunch length monitor, raw",
+    "BLEN:LI11:359:BRAWBR": "BC11 bunch length monitor, raw",
+    "BLEN:LI14:888:BRAWBR": "BC14 bunch length monitor, raw",
+    "BLEN:LI20:3014:BRAWBR": "sector 20 bunch length monitor, raw",
+}
+
+# Drift monitors (S8), monitored during each step's capture. F2_live_model's estimates for L2 and L3 of the energy gain
+# and chirp (MeV) and the fudge (design gain over the klystrons' sum), and its heartbeat: on srv01 (11-04, by hand)
+# L2's changed about once a second and L3's not in a minute. The LI14 klystron pair whose phase setpoints moved by
+# about 1 deg at 0.7 Hz (11-04), with the readbacks the E331 DAQ records for it (nonBSA_List_LINAC_L2KLYS).
+DRIFT = {
+    "SIOC:SYS1:ML02:AO922": "F2_live_model L2 energy gain, MeV",
+    "SIOC:SYS1:ML02:AO926": "F2_live_model L2 chirp, MeV",
+    "SIOC:SYS1:ML02:AO930": "F2_live_model L2 fudge",
+    "SIOC:SYS1:ML02:AO923": "F2_live_model L3 energy gain, MeV",
+    "SIOC:SYS1:ML02:AO927": "F2_live_model L3 chirp, MeV",
+    "SIOC:SYS1:ML02:AO931": "F2_live_model L3 fudge",
+    "PHYS:SYS1:1:MODEL_SERVER": "F2_live_model heartbeat",
+    "LI14:KLYS:41:PDES": "LI14 klystron 4 phase setpoint, deg",
+    "LI14:KLYS:41:PHAS": "LI14 klystron 4 phase readback, deg",
+    "LI14:KLYS:41:ADES": "LI14 klystron 4 amplitude setpoint",
+    "LI14:KLYS:41:AMPL": "LI14 klystron 4 amplitude readback",
+    "LI14:KLYS:51:PDES": "LI14 klystron 5 phase setpoint, deg",
+    "LI14:KLYS:51:PHAS": "LI14 klystron 5 phase readback, deg",
+    "LI14:KLYS:51:ADES": "LI14 klystron 5 amplitude setpoint",
+    "LI14:KLYS:51:AMPL": "LI14 klystron 5 amplitude readback",
+}
+
+# Magnets (S8), read once at the start of each step and by optics_test(): the supply readbacks of the final-focus and
+# spectrometer quads and of the BC20 chicane sextupoles (F2_live_model's unaliased-elements.csv names those), the DAQ's
+# names (nonBSA_List_S20Magnets). Which supply drives which quad isn't settled (some drive two: twobunch-s2e-rl,
+# xtcav_tier1_configs.py), so optics_test() compares them supply by supply with the DAQ (MAGNETS_IN_DAQ).
+MAGNETS = {
+    "LI20:LGPS:3011:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3031:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3091:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3141:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3151:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3204:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3261:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:3311:BACT": "final-focus or spectrometer quad supply",
+    "LI20:LGPS:2145:BACT": "sextupole S1EL supply",
+    "LI20:LGPS:2165:BACT": "sextupole S2EL supply",
+    "LI20:LGPS:2195:BACT": "sextupoles S3EL supply",
+    "LI20:LGPS:2275:BACT": "sextupoles S3ER supply",
+    "LI20:LGPS:2335:BACT": "sextupole S2ER supply",
+    "LI20:LGPS:2365:BACT": "sextupole S1ER supply",
+}
+# Each supply's median in TEST_15668 (nonBSA_List_S20Magnets); E300_15671 and E300_15673 agree within 0.01%
+# (tests/test_drift.py).
+MAGNETS_IN_DAQ = {
+    "LI20:LGPS:3011:BACT": -72.1891,
+    "LI20:LGPS:3031:BACT": 125.983,
+    "LI20:LGPS:3091:BACT": -115.8243,
+    "LI20:LGPS:3141:BACT": -115.825,
+    "LI20:LGPS:3151:BACT": 99.2317,
+    "LI20:LGPS:3204:BACT": -234.5114,
+    "LI20:LGPS:3261:BACT": 180.6918,
+    "LI20:LGPS:3311:BACT": -81.2477,
+    "LI20:LGPS:2145:BACT": 1400.0248,
+    "LI20:LGPS:2165:BACT": -3199.927,
+    "LI20:LGPS:2195:BACT": -1150.0273,
+    "LI20:LGPS:2275:BACT": -1149.9828,
+    "LI20:LGPS:2335:BACT": -3196.3857,
+    "LI20:LGPS:2365:BACT": 1399.9952,
+}
+
 # PV name -> what it is and the stage that added it
 READ: dict[str, str] = {
     CAMERA: "DTOTR2 XTCAV camera image, raw flat array (S1)",
@@ -76,4 +147,5 @@ READ: dict[str, str] = {
     TCAV_PHASE: "XTCAV phase readback, deg (S4)",
     **{name: f"{what} (S6)" for name, what in L1.items()},
     **{name: f"{what} (S7)" for name, what in L2.items()},
+    **{name: f"{what} (S8)" for name, what in {**BLEN, **DRIFT, **MAGNETS}.items()},
 }

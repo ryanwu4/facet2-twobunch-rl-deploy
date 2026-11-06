@@ -1,6 +1,7 @@
 """Channel Access server for the offline tests: serves DAQ frames as the DTOTR2 camera PV, the camera readbacks,
-the DAQ's TCAV amplitude and phase readbacks of each frame's shot, the L1 readbacks and phase setpoints of each
-frame's shot (conftest.PER_SHOT), and the other L1 and L2 PVs (conftest.constant_values).
+the DAQ's TCAV amplitude and phase readbacks of each frame's shot, the L1 readbacks and phase setpoints and the
+bunch-length signals of each frame's shot (conftest.PER_SHOT), the other L1 and L2 PVs (conftest.constant_values),
+stand-ins for the drift PVs (conftest.DRIFT_STAND_IN) and the magnets (conftest.magnet_values).
 
     python tests/soft_ioc.py <DAQ h5 file> <first> <last>
 
@@ -23,7 +24,8 @@ import numpy as np
 from caproto import ChannelDouble, ChannelEnum, ChannelInteger, ChannelString, ChannelType
 from caproto.server import PVGroup, pvproperty, run
 
-from conftest import MODES, PER_SHOT, constant_values, per_shot_values, tcav_readbacks
+from conftest import (DRIFT_STAND_IN, MODES, PER_SHOT, constant_values, magnet_values, per_shot_values,
+                      tcav_readbacks)
 from twobunch_deploy import pvs, screen
 
 path, first, last = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
@@ -34,7 +36,8 @@ with h5py.File(path) as f:
 daq_frames, stamps = step_frames[first:last], step_stamps[first:last]
 tcav, per_shot = tcav_readbacks(), per_shot_values()
 phases = {**{name: ChannelDouble(value=0.0) for name in PER_SHOT},
-          **{name: ChannelDouble(value=value) for name, value in constant_values().items()}}
+          **{name: ChannelDouble(value=value) for name, value in
+             {**constant_values(), **DRIFT_STAND_IN, **magnet_values()}.items()}}
 
 T = screen.TRAINED
 sensor = np.full((last - first, 964, 1292), 31, "int16")                  # 31: the live dark level (S1)

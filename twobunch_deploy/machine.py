@@ -4,6 +4,7 @@ S1  frames(): every DTOTR2 frame published during a capture, with its pulse ID
 S2  get(): one read of a scalar PV in pvs.READ; camera_settings(): the DTOTR2 camera's ROI, orientation, exposure,
     gain, pixel size, and where its array comes from and its size
 S4  updates(): every update of some scalar PVs while a block runs (the TCAV readbacks during frames())
+S8  describe(): one read of several PVs with their metadata (the magnets at each step, check_pvs())
 """
 from __future__ import annotations
 
@@ -100,4 +101,36 @@ def updates(names: list[str]):
         yield got
     finally:
         for pv in monitors:
+            pv.disconnect()
+
+
+def describe(names: list[str]) -> dict:
+    """One read of each PV in `names` with its metadata, without subscribing: {name: {"value", "elements", "units",
+    "host", "timestamp", "severity"}}, or {name: None} if it doesn't connect within 2 s of the call or then doesn't
+    answer within 2 s. Raises ValueError if a name isn't in pvs.READ.
+
+    Connects to all of them at once, with one 2 s deadline, so PVs that don't exist cost 2 s in all, not 2 s each.
+    Reads one element: an array's value is its first element, and "elements" its length.
+    """
+    for name in names:
+        if name not in pvs.READ:
+            raise ValueError(f"{name} is not in pvs.READ")
+    channels = [epics.PV(name, auto_monitor=False) for name in names]
+    deadline = time.time() + 2
+    try:
+        got = {}
+        for pv in channels:
+            meta = None
+            if pv.wait_for_connection(timeout=max(0.0, deadline - time.time())):
+                meta = pv.get_with_metadata(count=1, timeout=2, form="time", with_ctrlvars=True, use_monitor=False)
+            if meta is None:
+                got[pv.pvname] = None
+                continue
+            value = meta["value"]
+            got[pv.pvname] = {"value": value.item() if hasattr(value, "item") else value, "elements": pv.nelm,
+                              "units": meta.get("units"), "host": pv.host, "timestamp": meta["timestamp"],
+                              "severity": meta["severity"]}
+        return got
+    finally:
+        for pv in channels:
             pv.disconnect()
