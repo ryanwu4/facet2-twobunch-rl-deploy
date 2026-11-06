@@ -16,7 +16,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | S3 | Background, processing, `peek()` |
 | S4 | TCAV readbacks and off / + / − tagging |
 | S5 | Row correction and step readings |
-| S6 | L1 phase readbacks |
+| S6 | L1 klystron phase and amplitude readbacks, phase setpoints |
 | S7 | L2 subbooster phases |
 | S8 | Bunch length and drift monitors |
 | S9 | v1 notebook assembled |
@@ -27,7 +27,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 |---|---|
 | `twobunch_deploy/pvs.py` | Every PV the package may read |
 | `twobunch_deploy/machine.py` | Channel Access reads (pyepics) |
-| `twobunch_deploy/acquire.py` | Frames for one measurement step, TCAV tagging |
+| `twobunch_deploy/acquire.py` | Frames for one measurement step, TCAV tagging, the L1 and L2 PVs over it |
 | `twobunch_deploy/screen.py` | Image processing and step readings |
 | `twobunch_deploy/replay.py` | DAQ files through the same calls, for offline runs |
 | `twobunch_deploy/session.py` | The calls the notebooks make |
@@ -42,7 +42,7 @@ pixi run test        # all tests
 pixi run code-hash   # sha256 of the package source
 ```
 
-The camera tests run the package's Channel Access calls against a soft IOC (`tests/soft_ioc.py`, caproto) that serves real DAQ frames under the camera's PV name, and the DAQ's TCAV readbacks of each frame, on 127.0.0.1 only. The DAQ files are not in this repo, so these tests run only where they are (`DTOTR2_DAQ`, the TEST_15668 `images/DTOTR2` directory, with the run's `.mat` two levels up) and are skipped in CI. So are the tests that compare the image processing, TCAV tags and step readings with Yiheng Ye's DAQ analysis classes, twobunch-s2e-rl's `online/features.py` and its v7 replay of the DAQ runs: they need those, and the DAQ runs, next to this repo. The first Channel Access call starts EPICS's standard `caRepeater` helper process, which keeps running afterwards.
+The camera tests run the package's Channel Access calls against a soft IOC (`tests/soft_ioc.py`, caproto) that serves real DAQ frames under the camera's PV name, the DAQ's TCAV and L1 readbacks of each frame, and its L2 values, on 127.0.0.1 only. The DAQ files are not in this repo, so these tests run only where they are (`DTOTR2_DAQ`, the TEST_15668 `images/DTOTR2` directory, with the run's `.mat` two levels up) and are skipped in CI. So are the tests that compare the image processing, TCAV tags and step readings with Yiheng Ye's DAQ analysis classes, twobunch-s2e-rl's `online/features.py` and its v7 replay of the DAQ runs: they need those, and the DAQ runs, next to this repo. The first Channel Access call starts EPICS's standard `caRepeater` helper process, which keeps running afterwards.
 
 ## On the machine
 

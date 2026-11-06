@@ -12,8 +12,9 @@ import h5py
 import numpy as np
 import pytest
 
-from conftest import MODES, V7, XTCAV, YIHENG, daq, needs_daq, needs_v7, pil_crop, tcav_readbacks
-from twobunch_deploy import acquire, screen, session, viz
+from conftest import (MODES, V7, XTCAV, YIHENG, constant_values, daq, needs_daq, needs_v7, pil_crop, per_shot_values,
+                      tcav_readbacks)
+from twobunch_deploy import acquire, machine, pvs, screen, session, viz
 
 X = screen.x_positions(30.5)
 
@@ -155,8 +156,34 @@ def test_step_figure():
               "per_frame": {"pulse_id": [36 * i for i in range(len(tags))], "tag": tags.tolist(),
                             "drop": drop.tolist(), "band_stats": r.stats,
                             "amplitude": [None if t == "unmatched" else 22.0 for t in tags],
-                            "phase": [None if t == "unmatched" else 90.0 for t in tags]}}
-    assert len(viz.step(record, {"+": r.medians["+"]}).axes) == 5
+                            "phase": [None if t == "unmatched" else 90.0 for t in tags],
+                            "timestamp": [100 + 0.1 * i for i in range(len(tags))]}}
+    names = [*pvs.L1, *pvs.L2]
+    updates = [machine.Update(name, 36 * i, 100 + 0.1 * i, -23.5 + 0.1 * i if i % 3 else 0.0)
+               for i in range(4) for name in names[:2]] + [machine.Update(name, 0, 50.0, -20.0) for name in names[2:]]
+    updates.append(machine.Update(names[-1], 72, 100.2, -19.0))                  # a change: drawn first -> last
+    moved = ["LI12:SBST:1:PDES", "LI13:SBST:1:PDES", "LI14:SBST:1:PDES"]
+    updates += [machine.Update(name, 36 * i, 100 + 0.1 * i, value) for name in moved
+                for i, value in ((1, -19.5), (2, -20.5))]                          # median -20, as the first
+    record["phases"] = {name: acquire.summarise(updates, name) for name in names}
+    fig = viz.step(record, {"+": r.medians["+"]}, updates)
+    assert len(fig.axes) == 7
+    l1, l2 = fig.axes[-2:]
+    labels = l1.get_legend_handles_labels()[1]                      # each phase readback, then its setpoint
+    assert [label.split(": ")[0] for label in labels] == ["KLYS:LI11:11:FB:FAST_PACTBR", "KLYS:LI11:11:PREQ",
+                                                         "KLYS:LI11:21:FB:FAST_PACTBR", "KLYS:LI11:21:PREQ"]
+    lines = {line.get_label().split(": ")[0]: line for line in l1.get_lines() if ": " in line.get_label()}
+    for name in ("KLYS:LI11:11:FB:FAST_PACTBR", "KLYS:LI11:11:PREQ"):
+        assert list(lines[name].get_ydata()) == [u.value for u in updates if u.name == name]
+    setpoints, amplitudes = l1.get_title().split("\n")
+    assert setpoints == "KLYS:LI11:11:SSSB_PDES -20.000; KLYS:LI11:21:SSSB_PDES -20.000"
+    assert amplitudes == "KLYS:LI11:11:FB:FAST_AACTBR median -20.0000; KLYS:LI11:21:FB:FAST_AACTBR median -20.0000"
+    assert [label.split(": ")[0] for label in l2.get_legend_handles_labels()[1]] == moved
+    assert [list(line.get_ydata()) for line in l2.get_lines()[:3]] == [[0, 0.5, -0.5]] * 3     # minus the median
+    pdes, phas = l2.get_title().split("\n")
+    assert pdes == "LI11:SBST:1:PDES -20.000" and phas.endswith("LI14:SBST:1:PHAS -20.000 -> -19.000")
+    assert viz.changed(record["phases"][names[-1]]) == "-20.000 -> -19.000"
+    assert viz.changed(record["phases"][names[-2]]) == "-20.000" and viz.changed({"updates": 0}) == "no update"
 
 
 @pytest.fixture(scope="module")
@@ -290,6 +317,17 @@ def test_step(replay, tmp_path, monkeypatch):
     assert r.record["reference"]["off_x_rms_mm"] == {"median": np.median(widths), "max": max(widths)}
     for sign in ("+", "-"):
         np.testing.assert_array_equal(r.medians[sign], expected.medians[sign])
+    per_shot = per_shot_values()
+    constants = constant_values()
+    assert 0.0 in constants.values()                              # LI11:SBST:1:PDES, 0 in the DAQ
+    for name, value in constants.items():                         # S6, S7: one update each, on subscribing
+        assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value,
+                                            "zeros": int(value == 0)}
+    for name in next(iter(per_shot.values())):                    # one per frame with a shot
+        values = [per_shot[p][name] for p in frame_ids if p in per_shot]
+        assert r.record["phases"][name] == {"updates": len(values), "median": np.median(values), "first": values[0],
+                                            "last": values[-1], "zeros": values.count(0)}
+    assert len(frames["timestamp"]) == len(frame_ids) and np.all(np.diff(frames["timestamp"]) > 0)
     np.testing.assert_equal(json.loads(Path(r.path).read_text()), json.loads(json.dumps(r.record)))
     saved = np.load(Path(r.path).with_suffix(".npz"))
     assert np.array_equal(saved["crops"], crops) and np.array_equal(saved["reference_shifts"], expected.reference.shifts)

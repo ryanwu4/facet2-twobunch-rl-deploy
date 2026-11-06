@@ -3,19 +3,27 @@
 S2  geometry(): a full frame as the ops display orients it, with the hand crop outlined
 S3  background(): a background and its brightest frame; peek(): one frame through the processing, with its energy
     cut and band statistics
-S5  step(): one step's median frames, each frame's drive-witness offset, and the TCAV readbacks and tags
+S5  step(): one step's median frames, each frame's drive-witness offset, and the TCAV readbacks and tags; S6, S7 add
+    the L1 phase readbacks and setpoints and the L2 subbooster phase setpoints during the step, and the other L1 and
+    L2 PVs as text
+S6  phases(): each L1 and L2 PV against time
 """
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from . import screen
+from . import pvs, screen
 from .session import PULSE_ID_PERIOD, PULSES_PER_SECOND
 
 DRIVE, WITNESS, CUT = "#eb6834", "#2a9df4", "#1fc7b6"
 # TCAV tags (acquire.tag): colour and marker; frames tagged "unmatched" have no readback to plot
 TAGS = {"+": ("#2a78d6", "^"), "-": ("#e87ba4", "v"), "neither": ("#eda100", "o"), "off": ("#555555", "s")}
+# klystrons 11 and 21: colour, the readback's marker (hollow and of different sizes, as they overlap) and its size, and
+# the setpoint's line style
+L1_STYLES = (("#1b9e77", "o", 7, "--"), ("#7570b3", "s", 4, ":"))
+# the LI12, LI13 and LI14 subboosters: colour and marker, hollow and of different sizes, as they move together
+L2_STYLES = (("#d95f02", "o", 9), ("#e7298a", "s", 6), ("#66a61e", "^", 4))
 
 
 def geometry(data: np.ndarray, camera: dict, title: str = ""):
@@ -110,12 +118,17 @@ def peek(crop: np.ndarray, processed: np.ndarray, valley: screen.Valley, stats: 
     return fig
 
 
-def step(record: dict, medians: dict):
-    """One step (session.step's record). Top: the median of each polarity's kept frames (processed, row-corrected),
-    with the step's cut, the witness band shaded and the kept frames' median drive and witness x centroids. Middle:
-    each + and - frame's x_d - x_w, kept frames filled and dropped ones hollow, each polarity's median of the kept
-    frames as a line. Bottom: each frame's TCAV amplitude and phase readback by tag, the dropped frames' spans shaded,
-    unmatched frames as x on the time axis. Time from the capture's first frame, by pulse ID."""
+def step(record: dict, medians: dict, updates: list):
+    """One step (session.step's record and its capture's updates). Top: the median of each polarity's kept frames
+    (processed, row-corrected), with the step's cut, the witness band shaded and the kept frames' median drive and
+    witness x centroids. Second: each + and - frame's x_d - x_w, kept frames filled and dropped ones hollow, each
+    polarity's median of the kept frames as a line. Third: each frame's TCAV amplitude and phase readback by tag,
+    unmatched frames as x on the time axis. Time from the capture's first frame, by pulse ID; the dropped frames'
+    spans shaded. Fourth: every update of the two L1 phase readbacks (FAST_PACTBR) by its timestamp (one from before
+    the first frame, as a monitor's first update can be, at 0), their medians as lines, exact zeros off the axis, and
+    the two phase setpoints (PREQ) as steps. Bottom: every update of the LI12-14 subbooster phase setpoints (PDES) the
+    same way, each minus its median. The other L1 and L2 PVs as text: setpoints first -> last if they changed, the
+    amplitude readbacks' medians."""
     frames = record["per_frame"]
     pulse_ids = np.array(frames["pulse_id"])
     t = (pulse_ids - pulse_ids[0]) % PULSE_ID_PERIOD / PULSES_PER_SECOND
@@ -123,11 +136,13 @@ def step(record: dict, medians: dict):
     mm = 1e3 * screen.x_positions(record["camera"]["RESOLUTION"])
     half = (mm[1] - mm[0]) / 2
 
-    fig = plt.figure(figsize=(13, 12))
-    grid = fig.add_gridspec(3, 2, height_ratios=[1.4, 1, 1])
+    fig = plt.figure(figsize=(13, 18))
+    grid = fig.add_gridspec(5, 2, height_ratios=[1.4, 1, 1, 1, 1])
     images = [fig.add_subplot(grid[0, 0]), fig.add_subplot(grid[0, 1])]
     offsets = fig.add_subplot(grid[1, :])
     readbacks = [fig.add_subplot(grid[2, 0]), fig.add_subplot(grid[2, 1])]
+    l1 = fig.add_subplot(grid[3, :])
+    l2 = fig.add_subplot(grid[4, :])
     for ax, sign in zip(images, ("+", "-")):
         p = record["polarity"][sign]
         ax.set_title(f"{sign}V: median of {p['kept']} kept frames ({p['dropped']} dropped)", fontsize=9)
@@ -175,6 +190,48 @@ def step(record: dict, medians: dict):
             ax.axvspan(t[i] - 0.05, t[i] + 0.05, color="0.85", lw=0)
         ax.set_xlabel("time from the first frame (s)")
 
+    pact = [name for name in pvs.L1 if name.endswith(":FAST_PACTBR")]
+    preq = [name for name in pvs.L1 if name.endswith(":PREQ")]
+    for readback, setpoint, (colour, marker, size, dashes) in zip(pact, preq, L1_STYLES):
+        s = record["phases"][readback]
+        mine = [u for u in updates if u.name == readback]
+        t_update = [max(u.timestamp - frames["timestamp"][0], 0) for u in mine]
+        l1.plot(t_update, [u.value for u in mine], marker, color=colour, mfc="none", ms=size, ls="none",
+                label=f"{readback}: {s['updates']} updates, {s.get('zeros', 0)} exact zeros")
+        if "median" in s:
+            l1.axhline(s["median"], color=colour, lw=1.2)
+        mine = [u for u in updates if u.name == setpoint]
+        t_update = [max(u.timestamp - frames["timestamp"][0], 0) for u in mine]
+        l1.plot(t_update, [u.value for u in mine], dashes, color=colour, lw=1, drawstyle="steps-post",
+                label=f"{setpoint}: {len(mine)} updates")
+    nonzero = [u.value for u in updates if u.name in pact + preq and u.value != 0]
+    if nonzero:
+        l1.set_ylim(min(nonzero) - 0.1, max(nonzero) + 0.1)
+    l1.set_xlabel("time from the first frame (s), by timestamp")
+    l1.set_ylabel("L1 phase (deg)")
+    l1.legend(fontsize=8, ncol=2)
+    setpoints = [f"{name} {changed(record['phases'][name])}" for name in pvs.L1 if name.endswith(":SSSB_PDES")]
+    amplitudes = [f"{name} median {record['phases'][name].get('median', np.nan):.4f}" for name in pvs.L1
+                  if name.endswith(":FAST_AACTBR")]
+    l1.set_title("; ".join(setpoints) + "\n" + "; ".join(amplitudes), fontsize=8)
+
+    # The subbooster setpoints the L2 multiknob moves, each minus its median: on 11-04 they sat about 2 deg apart and
+    # moved together by about 0.05 deg. LI11's (0; the multiknob doesn't move it) and the readbacks go in the title.
+    moved = [name for name in pvs.L2 if name.endswith(":PDES") and not name.startswith("LI11:")]
+    for name, (colour, marker, size) in zip(moved, L2_STYLES):
+        s = record["phases"][name]
+        mine = [u for u in updates if u.name == name]
+        t_update = [max(u.timestamp - frames["timestamp"][0], 0) for u in mine]
+        l2.plot(t_update, [u.value - s["median"] for u in mine], marker, color=colour, mfc="none", ms=size, ls="none",
+                label=f"{name}: median {s['median']:.3f}, {s['updates']} updates" if mine else f"{name}: no update")
+    l2.axhline(0, color="0.5", lw=1)
+    l2.set_xlabel("time from the first frame (s), by timestamp")
+    l2.set_ylabel("L2 subbooster setpoint\nminus its median (deg)")
+    l2.legend(fontsize=8, ncol=3)
+    rest = [[name for name in pvs.L2 if name not in moved and name.endswith(kind)] for kind in (":PDES", ":PHAS")]
+    l2.set_title("\n".join("; ".join(f"{name} {changed(record['phases'][name])}" for name in names) for names in rest),
+                 fontsize=8)
+
     r = record["reading"]
     failed = [name for name, ok in record["checks"].items() if not ok]
     fig.suptitle(f"step: {'valid' if record['valid'] else 'invalid (' + '; '.join(failed) + ')'}\n"
@@ -183,5 +240,37 @@ def step(record: dict, medians: dict):
                     f"{r['drive_charge_fraction']:.3f}, edge fraction {r['edge_frac']:.4f}, cut sensitivity "
                     f"{r['cut_sens_um']:.1f} um")
                  + f"; tags {record['tags']}", fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
+def changed(summary: dict) -> str:
+    """A PV over a capture (acquire.summarise): its first value, "first -> last" if it changed, or "no update"."""
+    if not summary["updates"]:
+        return "no update"
+    first, last = summary["first"], summary["last"]
+    return f"{first:.3f}" if first == last else f"{first:.3f} -> {last:.3f}"
+
+
+def phases(updates: list, names: list[str], start: float, seconds: float):
+    """S6, S7 (session.phases_test): every update of each PV in `names` against time from `start`, one panel per kind
+    of PV (the part of the name after the last colon). An update from before `start` (a monitor's first update is the
+    PV's current value) is drawn at 0; exact zeros (BSA dropouts) are off the axis."""
+    kinds = {}
+    for name in names:
+        kinds.setdefault(name.rsplit(":", 1)[1], []).append(name)
+    fig, axes = plt.subplots((len(kinds) + 1) // 2, 2, figsize=(13, 10), sharex=True, squeeze=False)
+    for ax, members in zip(axes.flat, kinds.values()):
+        for name in members:
+            mine = [u for u in updates if u.name == name]
+            ax.plot([max(u.timestamp - start, 0) for u in mine], [u.value for u in mine], ".-", ms=3, lw=0.6,
+                    drawstyle="steps-post", label=f"{name}: {len(mine)} updates")
+        nonzero = [u.value for u in updates if u.name in members and u.value != 0]
+        if nonzero:
+            ax.set_ylim(min(nonzero) - 0.1, max(nonzero) + 0.1)
+        ax.legend(fontsize=8)
+    for ax in axes[-1]:
+        ax.set_xlabel(f"time from the start of the {seconds} s (s)")
+    fig.suptitle(f"L1 and L2 PVs over {seconds} s", fontsize=10)
     fig.tight_layout()
     return fig

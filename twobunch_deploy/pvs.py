@@ -37,10 +37,43 @@ CAMERA_SETTINGS = {
 TCAV_AMPLITUDE = "TCAV:LI20:2400:A"
 TCAV_PHASE = "TCAV:LI20:2400:P"
 
+# L1: the LI11 klystrons 11 and 21 (S6). Monitored during each step's capture. FAST_PACTBR and FAST_AACTBR are the
+# phase and amplitude readbacks the DAQ records as FB:FAST_PACT and FB:FAST_AACT: BSA PVs, read at beam rate with the
+# event definition's name (BR) appended (Zack, 11-05). On srv01 (11-05, by hand) they updated once per shot, with the
+# shot's pulse ID. PREQ is the absolute phase setpoint ops move L1 with; a feedback writes the same value to both
+# (Zack, 10-16), once per shot on srv01 (11-05). It is in no DAQ. SSSB_PDES is the DAQ's subbooster phase setpoint
+# (nonBSA_List_LINAC_SBST; -18.03 deg).
+L1 = {
+    "KLYS:LI11:11:FB:FAST_PACTBR": "L1 klystron 11 phase readback, deg",
+    "KLYS:LI11:21:FB:FAST_PACTBR": "L1 klystron 21 phase readback, deg",
+    "KLYS:LI11:11:FB:FAST_AACTBR": "L1 klystron 11 amplitude readback, norm",
+    "KLYS:LI11:21:FB:FAST_AACTBR": "L1 klystron 21 amplitude readback, norm",
+    "KLYS:LI11:11:PREQ": "L1 klystron 11 phase setpoint, deg",
+    "KLYS:LI11:21:PREQ": "L1 klystron 21 phase setpoint, deg",
+    "KLYS:LI11:11:SSSB_PDES": "L1 klystron 11 subbooster phase setpoint, deg",
+    "KLYS:LI11:21:SSSB_PDES": "L1 klystron 21 subbooster phase setpoint, deg",
+}
+
+# L2: the subbooster phase setpoints of sectors 11-14, and their phase readbacks (S7). The L2 multiknob moves LI12-14's
+# 1:1 (DAQ, 10-16). LI11's phases L2's klystrons 4-8 (F2_live_model) and the multiknob doesn't move it (0 throughout
+# TEST_15668). Monitored during each step's capture. The DAQ's nonBSA names (nonBSA_List_LINAC_SBST).
+L2 = {
+    "LI11:SBST:1:PDES": "LI11 subbooster phase setpoint, deg",
+    "LI12:SBST:1:PDES": "LI12 subbooster phase setpoint, deg",
+    "LI13:SBST:1:PDES": "LI13 subbooster phase setpoint, deg",
+    "LI14:SBST:1:PDES": "LI14 subbooster phase setpoint, deg",
+    "LI11:SBST:1:PHAS": "LI11 subbooster phase readback, deg",
+    "LI12:SBST:1:PHAS": "LI12 subbooster phase readback, deg",
+    "LI13:SBST:1:PHAS": "LI13 subbooster phase readback, deg",
+    "LI14:SBST:1:PHAS": "LI14 subbooster phase readback, deg",
+}
+
 # PV name -> what it is and the stage that added it
 READ: dict[str, str] = {
     CAMERA: "DTOTR2 XTCAV camera image, raw flat array (S1)",
     **{name: f"DTOTR2 {what} (S2)" for name, what in CAMERA_SETTINGS.items()},
     TCAV_AMPLITUDE: "XTCAV amplitude readback, MV (S4)",
     TCAV_PHASE: "XTCAV phase readback, deg (S4)",
+    **{name: f"{what} (S6)" for name, what in L1.items()},
+    **{name: f"{what} (S7)" for name, what in L2.items()},
 }
