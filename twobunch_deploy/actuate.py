@@ -2,6 +2,8 @@
 else, and here allows them only in put_preq() and turn_knob().
 
 W1  arm(), disarm(), move_l1(), move_l2(), undo_all(), state(); pvaccess_version() for the session's record
+P1b episode and attended(), for advise.py: manual moves are refused while an episode runs (its moves come from
+    advise.apply(), with the proposal's number in the ledger), and answering a proposal counts as activity
 
 What can be written is in pvs: the two L1 phase setpoints (PREQ, absolute) and the L2 phase multiknob (a delta), each
 write at most one policy action, and the net move per armed session within a budget. Nothing is written before arm(),
@@ -29,7 +31,9 @@ KNOB_TIMEOUT_S = 10.0   # the multiknob call
 KNOB_SETTLE_S = 5.0     # the subbooster setpoints reach the gateway about once a second: wait at most this long
 UNDO_PAUSE_S = 1.0      # between undo_all()'s writes, so the setpoints step back at a pace the feedbacks can follow
 
-_session: dict | None = None    # this process's armed session: name, ledger, time of the last write, multiknob connection
+_session: dict | None = None    # this process's armed session: name, ledger, last write's time, multiknob connection
+writes = 0                      # writes this process has sent, in any session (advise.py checks readings against it)
+episode: str | None = None      # the goal of the episode advise.py is running: manual moves are refused meanwhile
 
 
 def lock_path() -> Path:
@@ -81,23 +85,26 @@ def disarm() -> None:
     _session = None
 
 
-def move_l1(delta: float) -> dict:
+def move_l1(delta: float, proposal: int | None = None) -> dict:
     """Move L1 by `delta` deg: both PREQs to their current values plus `delta`. Refuses unless armed, within one action
     and the budget, and unless both PREQs still read what this session last wrote (or found at arm()): otherwise a
-    feedback or someone else moved them, and it disarms. Returns the ledger entry."""
+    feedback or someone else moved them, and it disarms. While an episode runs only advise.apply() moves, giving the
+    `proposal` it applies. Returns the ledger entry."""
+    _manual(proposal)
     _check("L1", delta)
     before = _read(pvs.L1_SETPOINTS)
     expected = _last("L1")
     if any(abs(before[n] - expected[n]) > L1_TOL for n in before):
         disarm()
         raise RuntimeError(f"PREQ is {before}, not {expected} as last written: something else moved it; disarmed")
-    return _write_l1(delta, before, {n: v + delta for n, v in before.items()})
+    return _write_l1(delta, before, {n: v + delta for n, v in before.items()}, proposal=proposal)
 
 
-def move_l2(delta: float) -> dict:
+def move_l2(delta: float, proposal: int | None = None) -> dict:
     """Move L2 by `delta` deg through the multiknob. Refuses unless armed, within one action and the budget, and unless
     the LI12-14 subbooster setpoints still read what this session last left (or found at arm()); otherwise it
-    disarms. Returns the ledger entry."""
+    disarms. While an episode runs only advise.apply() moves, as for move_l1(). Returns the ledger entry."""
+    _manual(proposal)
     _check("L2", delta)
     before = _read(pvs.MULTIKNOB_MOVES)
     expected = _last("L2")
@@ -105,7 +112,7 @@ def move_l2(delta: float) -> dict:
         disarm()
         raise RuntimeError(f"the subbooster setpoints are {before}, not {expected}: something else moved them; "
                            "disarmed")
-    return _write_l2(delta, before)
+    return _write_l2(delta, before, proposal=proposal)
 
 
 def undo_all(ledger: str | Path | None = None) -> list[dict]:
@@ -115,10 +122,14 @@ def undo_all(ledger: str | Path | None = None) -> list[dict]:
     setpoints still read its after values (the knob turns by minus its delta). Writes that a ledger already records as
     reversed are skipped, so undo_all() can be run again after stopping part way. Only completed writes are reversed:
     one that ended as "mismatch" or "not applied" disarmed the session, and its ledger lines show what moved, for ops
-    to restore by hand. The reversals are UNDO_PAUSE_S apart. Needs this process armed. Returns the reversals' ledger
-    entries."""
+    to restore by hand. The reversals are UNDO_PAUSE_S apart. Needs this process armed; ends a running episode.
+    Returns the reversals' ledger entries."""
+    global episode
     if _session is None:
         raise RuntimeError("not armed")
+    if episode is not None:
+        print(f"undo_all() ends the episode on goal {episode}")
+        episode = None
     path = (Path(ledger) if ledger is not None else _session["ledger"]).resolve()
     reversed_already = _reversed(path)
     done = [e for e in _entries(path) if e["state"] == "done" and e["undo"] is None]
@@ -154,6 +165,12 @@ def state() -> dict:
     return {"armed": True, "name": _session["name"], "ledger": str(_session["ledger"]),
             "net": {kind: _net(kind) for kind in pvs.WRITE},
             "pending": [e for e in entries if e["state"] == "pending" and e["write"] not in ended]}
+
+
+def attended() -> None:
+    """Someone answered a proposal (advise.py): restart the idle timer, as a write does."""
+    if _session is not None:
+        _session["last"] = time.time()
 
 
 def pvaccess_version() -> str:
@@ -193,6 +210,12 @@ def turn_knob(delta: float) -> str:
     return str(_session["knob"].rpc(pvs.MULTIKNOB_SERVICE, request, timeout=KNOB_TIMEOUT_S))
 
 
+def _manual(proposal: int | None) -> None:
+    if episode is not None and proposal is None:
+        raise RuntimeError(f"an episode on goal {episode} is running: its moves go through advise.apply(); "
+                           "advise.end_episode() first")
+
+
 def _check(kind: str, delta: float) -> None:
     """Refuse a write unless armed and active in the last IDLE_S (else disarm), `delta` is at most one step, and the
     session's net move stays within the budget."""
@@ -208,8 +231,9 @@ def _check(kind: str, delta: float) -> None:
         raise ValueError(f"{kind} {delta:+.3f} deg would take the net move past the budget (+-{limit['budget']} deg)")
 
 
-def _write_l1(delta: float, before: dict, target: dict, undo: dict | None = None) -> dict:
-    entry = _log({"kind": "L1", "delta": delta, "before": before, "target": target, "undo": undo, "state": "pending"})
+def _write_l1(delta: float, before: dict, target: dict, undo: dict | None = None, proposal: int | None = None) -> dict:
+    entry = _log({"kind": "L1", "delta": delta, "before": before, "target": target, "undo": undo, "state": "pending",
+                  **({"proposal": proposal} if proposal is not None else {})})
     put_preq(target)
     after = _read(pvs.L1_SETPOINTS)
     ok = all(abs(after[n] - target[n]) <= L1_TOL for n in target)
@@ -220,8 +244,9 @@ def _write_l1(delta: float, before: dict, target: dict, undo: dict | None = None
     return entry
 
 
-def _write_l2(delta: float, before: dict, undo: dict | None = None) -> dict:
-    entry = _log({"kind": "L2", "delta": delta, "before": before, "undo": undo, "state": "pending"})
+def _write_l2(delta: float, before: dict, undo: dict | None = None, proposal: int | None = None) -> dict:
+    entry = _log({"kind": "L2", "delta": delta, "before": before, "undo": undo, "state": "pending",
+                  **({"proposal": proposal} if proposal is not None else {})})
     try:
         reply = turn_knob(delta)
     except Exception as e:              # a timeout or a refusal: the setpoints say whether the knob turned
@@ -247,8 +272,10 @@ def _write_l2(delta: float, before: dict, undo: dict | None = None) -> dict:
 def _log(entry: dict) -> dict:
     """Append `entry` to this session's ledger, numbered and timed; returns it as written. A new write gets the next
     number; its result line repeats it with the same number."""
+    global writes
     if "write" not in entry:
         entry = {"write": sum(1 for e in _entries(_session["ledger"]) if e["state"] == "pending") + 1, **entry}
+        writes += 1
     entry = {**entry, "time": datetime.datetime.now().isoformat(timespec="milliseconds")}
     with open(_session["ledger"], "a") as f:
         print(json.dumps(entry), file=f)
