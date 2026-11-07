@@ -30,3 +30,9 @@ test = { cmd = "pytest tests", env = { PYTHONPATH = "." } }
 
 [environments]
 default = ["test"]
+
+# p4p: v2's multiknob call (actuate.turn_knob), PVAccess. From PyPI, whose wheels bundle their own EPICS libraries:
+# conda-forge's p4p needs epics-base 7.0.9, not the 7.0.3.1 pinned above. The prod environment's version goes in each
+# armed session's ledger (actuate.pvaccess_version).
+[pypi-dependencies]
+p4p = ">=4.3.0, <5"

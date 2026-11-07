@@ -4,7 +4,8 @@ hand crop. S3: backgrounds (take_background, pedestal, load_background), peek() 
 S4: tcav_test() of the TCAV readbacks and tags; peek() shows the newest frame's tag. S5: step(). S6, S7: phases_test()
 of the L1 and L2 PVs; step() records them. S8: drift_test() of the bunch-length and drift PVs and optics_test() of the
 magnets; step() records both. S9: check_pvs() and status() for the console; watch() and peek_strip() to look at the
-frames between steps."""
+frames between steps. W2 (v2): hold_test() and staircase() for the write sessions with the beam stopped at TD11; the
+writes themselves are in actuate.py."""
 from __future__ import annotations
 
 import datetime
@@ -652,4 +653,66 @@ def status() -> dict:
         last = steps[-1]
         summary["last_step"] = {"path": str(step_paths[-1]), "valid": last["valid"], "reading": last["reading"],
                                 "streak_um_per_deg": last["streak_um_per_deg"], "background": last["background"]}
+    return summary
+
+
+def hold_test(seconds: float = 600) -> dict:
+    """W2: every update of the L1, L2 and bunch-length PVs during `seconds` with nothing written (monitor_test): with
+    PREQ's feedback off, the L1 readbacks' scatter and the BC11 bunch-length drift. Saves to
+    data/<date>_V2/hold_test_<HHMMSS>."""
+    from . import pvs
+
+    return monitor_test("V2", "hold_test", [*pvs.L1, *pvs.L2, *pvs.BLEN], seconds)
+
+
+def staircase(kind: str, step: float, n: int, hold_s: float = 10) -> dict:
+    """W2: `n` moves of `step` deg on L1 or L2 (actuate.move_l1, move_l2), then one more, which the budget must refuse,
+    then `n` of -`step` back; `hold_s` of nothing before each move and after the last. Every update of the L1, L2 and
+    bunch-length PVs is recorded throughout. For each move: its ledger entry, and the median of each of those PVs over
+    the hold before it and the hold after it (each move's effect on the L1 readbacks, the BC11 bunch length and the
+    subbooster setpoints). Needs an armed session.
+
+    Saves the summary to data/<date>_V2/staircase_<kind>_<HHMMSS>.json and every update (.npz).
+    """
+    import numpy as np
+    from . import actuate, machine, pvs
+
+    names = [*pvs.L1, *pvs.L2, *pvs.BLEN]
+    moves, refused = [], None
+
+    def move(delta):                    # the ledger entry, with when the move began and ended (this host's clock)
+        start = time.time()
+        entry = {"L1": actuate.move_l1, "L2": actuate.move_l2}[kind](delta)
+        moves.append({**entry, "began": start, "ended": time.time()})
+
+    with machine.updates(names) as updates:
+        for delta in [step] * n + [None] + [-step] * n:
+            time.sleep(hold_s)
+            if delta is None:                                   # one more step up: the budget must refuse it
+                try:
+                    move(step)
+                    move(-step)
+                except ValueError as e:
+                    refused = str(e)
+                continue
+            move(delta)
+        time.sleep(hold_s)
+    updates = list(updates)
+
+    def medians(start, end):            # a PV that didn't update in the hold: the value it was holding
+        out = {}
+        for pv in names:
+            mine = [u for u in updates if u.name == pv and np.isfinite(u.value)]
+            values = [u.value for u in mine if start <= u.timestamp < end] or \
+                [u.value for u in mine if u.timestamp < start][-1:]
+            out[pv] = float(np.median(values)) if values else None
+        return out
+
+    summary = {"kind": kind, "step": step, "n": n, "hold_s": hold_s, "refused": refused,
+               "moves": [{**m, "hold_before": medians(m["began"] - hold_s, m["began"]),
+                          "hold_after": medians(m["ended"], m["ended"] + hold_s)} for m in moves]}
+    path = save_record("V2", f"staircase_{kind}", summary)
+    np.savez_compressed(path.with_suffix(".npz"), name=[u.name for u in updates],
+                        pulse_id=[u.pulse_id for u in updates], timestamp=[u.timestamp for u in updates],
+                        value=[u.value for u in updates])
     return summary

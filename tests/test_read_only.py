@@ -1,9 +1,11 @@
-"""v1 is read-only by construction: no code in the package or the notebooks can write to the machine.
+"""Only actuate.py can write to the machine (v2); everything else is read-only by construction (v1).
 
 Every line of the package and of each notebook's code cells is checked against FORBIDDEN, and PV names
-may appear only in pvs.py. The last tests check the patterns themselves: they must catch these write
-calls and PV names and pass these reads.
+may appear only in pvs.py. actuate.py may use pyepics' put and p4p's rpc, but only inside its two write
+functions (WRITERS). The last tests check the patterns themselves: they must catch these write calls and
+PV names and pass these reads.
 """
+import ast
 import json
 import re
 from pathlib import Path
@@ -40,10 +42,33 @@ def code_lines():
                     yield f"{nb.name} cell {c}", i, line
 
 
+# actuate.py's two write functions, and the patterns only it may use
+ACTUATE = Path("twobunch_deploy/actuate.py")
+WRITERS = {"put_preq": "put", "turn_knob": "rpc"}
+ACTUATE_MAY = (r"\bput\b", r"\brpc\b", r"\bcaproto\b|\bp4p\b")
+
+
 def test_no_write_calls():
     hits = [f"{where}:{i}: {line.strip()}  ({why})" for where, i, line in code_lines()
-            for pattern, why in FORBIDDEN.items() if re.search(pattern, line)]
+            for pattern, why in FORBIDDEN.items() if re.search(pattern, line)
+            and not (where == ACTUATE and pattern in ACTUATE_MAY)]
     assert not hits, "\n".join(hits)
+
+
+def test_writes_only_in_actuate_writers():
+    """In actuate.py, every put or rpc call is in its writer: put_preq() puts, turn_knob() makes the rpc."""
+    tree = ast.parse((REPO / ACTUATE).read_text())
+    found = []
+    for function in ast.walk(tree):
+        if isinstance(function, ast.FunctionDef):
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                        and node.func.attr in ("put", "rpc"):
+                    found.append((function.name, node.func.attr))
+    assert sorted(found) == sorted(WRITERS.items())
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr in ("put", "rpc")]
+    assert len(calls) == len(WRITERS)          # none outside a function either
 
 
 def test_pv_names_only_in_pvs():
