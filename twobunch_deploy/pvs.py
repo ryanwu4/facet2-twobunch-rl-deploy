@@ -1,7 +1,7 @@
-"""Every PV the package may read, as literal strings.
+"""Every PV the package may read, and the few it may write (v2), as literal strings.
 
 PV names appear nowhere else in the package or the notebook (tests/test_read_only.py checks), so each
-stage's PR shows exactly which PVs it adds. v1 only reads: there is no writable list.
+stage's PR shows exactly which PVs it adds. Only actuate.py writes, and only what WRITE lists.
 """
 
 # The RAW plugin's array: the camera driver's output (port PS107) with no plugin in between, the same arrays
@@ -159,6 +159,17 @@ MAGNETS_IN_DAQ = {
     "LI20:LGPS:2335:BACT": -3196.3857,
     "LI20:LGPS:2365:BACT": 1399.9952,
 }
+
+# v2 writes (W1), the only ones actuate.py makes. L1: both phase setpoints, absolute, the same delta to each, as ops
+# move L1. L2: the phase multiknob, a delta, through the AIDA-PVA service ops' multiknob wrapper calls. It moves
+# the LI12-14 subbooster phase setpoints 1:1 (DAQ, 10-16), which is what the readback check reads.
+L1_SETPOINTS = ["KLYS:LI11:11:PREQ", "KLYS:LI11:21:PREQ"]
+MULTIKNOB_SERVICE = "MKB:VAL"
+MULTIKNOB = "l2_phase"                  # its name as ops pass it to the wrapper, which sends it as is (Zack, 11-06)
+MULTIKNOB_MOVES = ["LI12:SBST:1:PDES", "LI13:SBST:1:PDES", "LI14:SBST:1:PDES"]
+# Per kind: the largest single write (one policy action, deg) and the net move allowed per armed session (deg; the
+# first sessions', 11-06 plan)
+WRITE = {"L1": {"step": 0.25, "budget": 1.0}, "L2": {"step": 0.3, "budget": 1.5}}
 
 # PV name -> what it is and the stage that added it
 READ: dict[str, str] = {

@@ -163,3 +163,28 @@ def replay():
         finally:
             ioc.kill()
             ioc.wait()
+
+
+@pytest.fixture(scope="session")
+def knob(replay):
+    """The stand-in multiknob service (mkb_server.py), for the whole test run, on the soft IOC of `replay`. PVAccess for
+    this process and the server use 127.0.0.1 and free ports only, set in the environment before p4p reads it."""
+    ports = []
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        with socket.socket(socket.AF_INET, kind) as s:
+            s.bind(("127.0.0.1", 0))
+            ports.append(str(s.getsockname()[1]))
+    env = {"EPICS_PVA_ADDR_LIST": "127.0.0.1", "EPICS_PVA_AUTO_ADDR_LIST": "NO", "EPICS_PVA_SERVER_PORT": ports[0],
+           "EPICS_PVA_BROADCAST_PORT": ports[1], "EPICS_PVAS_INTF_ADDR_LIST": "127.0.0.1",
+           "EPICS_PVAS_SERVER_PORT": ports[0], "EPICS_PVAS_BROADCAST_PORT": ports[1]}
+    with pytest.MonkeyPatch.context() as mp:
+        for k, v in env.items():
+            mp.setenv(k, v)
+        server = subprocess.Popen([sys.executable, REPO / "tests/mkb_server.py"], stdout=subprocess.PIPE, text=True,
+                                  env={**os.environ, "PYTHONPATH": str(REPO)})
+        try:
+            assert server.stdout.readline().strip() == "ready"
+            yield server
+        finally:
+            server.kill()
+            server.wait()
