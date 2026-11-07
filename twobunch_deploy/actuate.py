@@ -27,8 +27,9 @@ L1_TOL = 1e-3           # deg: a PREQ must read back the value written to it wit
 L2_TOL = 0.01           # deg: each subbooster setpoint must move by the multiknob's delta within this
 KNOB_TIMEOUT_S = 10.0   # the multiknob call
 KNOB_SETTLE_S = 5.0     # the subbooster setpoints reach the gateway about once a second: wait at most this long
+UNDO_PAUSE_S = 1.0      # between undo_all()'s writes, so the setpoints step back at a pace the feedbacks can follow
 
-_session: dict | None = None    # this process's armed session: name, ledger, time of the last write
+_session: dict | None = None    # this process's armed session: name, ledger, time of the last write, multiknob connection
 
 
 def lock_path() -> Path:
@@ -66,13 +67,15 @@ def arm(name: str) -> dict:
         print(json.dumps(first), file=f)
     lock_path().write_text(json.dumps({"name": name, "pid": os.getpid(), "host": socket.gethostname(),
                                        "time": first["time"], "ledger": str(ledger)}))
-    _session = {"name": name, "ledger": ledger, "last": time.time()}
+    _session = {"name": name, "ledger": ledger, "last": time.time(), "knob": None}
     return first
 
 
 def disarm() -> None:
-    """Stop writing from this process and release the lock."""
+    """Stop writing from this process: close the session's multiknob connection and release the lock."""
     global _session
+    if _session is not None and _session["knob"] is not None:
+        _session["knob"].close()
     if _session is not None and lock_path().exists() and json.loads(lock_path().read_text())["pid"] == os.getpid():
         lock_path().unlink()
     _session = None
@@ -112,7 +115,8 @@ def undo_all(ledger: str | Path | None = None) -> list[dict]:
     setpoints still read its after values (the knob turns by minus its delta). Writes that a ledger already records as
     reversed are skipped, so undo_all() can be run again after stopping part way. Only completed writes are reversed:
     one that ended as "mismatch" or "not applied" disarmed the session, and its ledger lines show what moved, for ops
-    to restore by hand. Needs this process armed. Returns the reversals' ledger entries."""
+    to restore by hand. The reversals are UNDO_PAUSE_S apart. Needs this process armed. Returns the reversals' ledger
+    entries."""
     if _session is None:
         raise RuntimeError("not armed")
     path = (Path(ledger) if ledger is not None else _session["ledger"]).resolve()
@@ -130,6 +134,8 @@ def undo_all(ledger: str | Path | None = None) -> list[dict]:
             raise RuntimeError(f"write {e['write']} of {path} can't be undone: its setpoints are {now}, not "
                                f"{e['after']}; disarmed")
         _check(e["kind"], -e["delta"])
+        if undone:
+            time.sleep(UNDO_PAUSE_S)
         undo = {"ledger": str(path), "write": e["write"]}
         if e["kind"] == "L1":
             undone.append(_write_l1(-e["delta"], now, e["before"], undo))
@@ -173,18 +179,18 @@ def put_preq(target: dict) -> None:
 
 def turn_knob(delta: float) -> str:
     """Turn the L2 phase multiknob by `delta` deg: the same AIDA-PVA call as ops' multiknob wrapper in F2_pytools (an
-    NTURI to the service with the knob's name and the delta), with a timeout. Returns the reply as text; raises on an
-    error or a timeout."""
+    NTURI to the service with the knob's name and the delta), with a timeout. Uses the armed session's PVAccess
+    connection, opened on its first turn and closed by disarm(), as the wrapper keeps one per kernel: the service offers
+    no login method p4p knows, so p4p warns "no supported auth" and connects as anonymous once per connection (11-06).
+    Returns the reply as text; raises on an error or a timeout."""
     from p4p.client.thread import Context
     from p4p.nt import NTURI
 
+    if _session["knob"] is None:
+        _session["knob"] = Context("pva")
     request = NTURI([("VALUE", "s"), ("MKB", "s")]).wrap(
         scheme="pva", path=pvs.MULTIKNOB_SERVICE, kws={"VALUE": delta, "MKB": pvs.MULTIKNOB})
-    ctxt = Context("pva")
-    try:
-        return str(ctxt.rpc(pvs.MULTIKNOB_SERVICE, request, timeout=KNOB_TIMEOUT_S))
-    finally:
-        ctxt.close()
+    return str(_session["knob"].rpc(pvs.MULTIKNOB_SERVICE, request, timeout=KNOB_TIMEOUT_S))
 
 
 def _check(kind: str, delta: float) -> None:

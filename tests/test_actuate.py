@@ -4,6 +4,7 @@ where the soft IOC's DAQ data are (conftest.py).
 The soft IOC serves the PREQs as stand-ins that change with every frame it publishes, like the feedback that writes the
 real ones, and the subbooster setpoints as constants that the stand-in multiknob moves. Each test restores them.
 """
+import datetime
 import json
 import os
 import subprocess
@@ -169,6 +170,22 @@ def test_undo_all_from_a_fresh_process(armed, tmp_path):
     undone = [e for e in lines(undo_ledger)[1:] if e["state"] == "done"]
     assert [(e["kind"], e["delta"], e["undo"]["write"]) for e in undone] == [("L2", 0.3, 3), ("L1", -0.25, 2),
                                                                             ("L1", -0.25, 1)]
+    sent = [datetime.datetime.fromisoformat(e["time"]) for e in lines(undo_ledger)[1:] if e["state"] == "pending"]
+    assert all((b - a).total_seconds() >= actuate.UNDO_PAUSE_S for a, b in zip(sent, sent[1:]))      # paced
+
+
+@needs_daq
+def test_one_multiknob_connection_per_session(armed, monkeypatch):
+    """The session's multiknob turns share one PVAccess connection, opened on the first and closed by disarm()."""
+    assert actuate._session["knob"] is None
+    actuate.move_l2(0.3)
+    knob = actuate._session["knob"]
+    actuate.move_l2(-0.3)
+    assert actuate._session["knob"] is knob
+    closed, close = [], knob.close
+    monkeypatch.setattr(knob, "close", lambda: (closed.append(True), close()))
+    actuate.disarm()
+    assert closed == [True]
 
 
 @needs_daq
