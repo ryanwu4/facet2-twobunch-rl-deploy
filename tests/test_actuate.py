@@ -128,7 +128,7 @@ def test_knob_fails(armed, monkeypatch, fault):
     it disarms."""
     start, ledger, _ = armed
     if fault == "unknown knob":
-        monkeypatch.setattr(pvs, "MULTIKNOB", "mkb:nothing.mkb")
+        monkeypatch.setattr(pvs, "MULTIKNOB", "nothing")
     else:
         monkeypatch.setattr(pvs, "MULTIKNOB_SERVICE", "NO:SERVICE")
         monkeypatch.setattr(actuate, "KNOB_TIMEOUT_S", 0.5)

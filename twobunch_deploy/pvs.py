@@ -165,7 +165,7 @@ MAGNETS_IN_DAQ = {
 # the LI12-14 subbooster phase setpoints 1:1 (DAQ, 10-16), which is what the readback check reads.
 L1_SETPOINTS = ["KLYS:LI11:11:PREQ", "KLYS:LI11:21:PREQ"]
 MULTIKNOB_SERVICE = "MKB:VAL"
-MULTIKNOB = "mkb:l2_phase.mkb"          # its name as the service expects it: to confirm with Zack
+MULTIKNOB = "l2_phase"                  # its name as ops pass it to the wrapper, which sends it as is (Zack, 11-06)
 MULTIKNOB_MOVES = ["LI12:SBST:1:PDES", "LI13:SBST:1:PDES", "LI14:SBST:1:PDES"]
 # Per kind: the largest single write (one policy action, deg) and the net move allowed per armed session (deg; the
 # first sessions', 11-06 plan)
