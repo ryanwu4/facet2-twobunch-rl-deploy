@@ -4,7 +4,7 @@ Runs the FACET-II two-bunch spacing controller on the machine. The controller it
 
 **v1 is read-only.** It reads the DTOTR2 XTCAV camera and a few phase, bunch-length and magnet PVs and turns the frames into the readings the controller uses.
 
-**v2 adds writes, in one module.** `twobunch_deploy/actuate.py` is the only code that writes: the two L1 phase setpoints and the L2 phase multiknob, each write at most one policy action, within a budget per session, only after `arm()`, each logged before and after in a ledger that `undo_all()` reverses. `tests/test_read_only.py` fails on a write call anywhere else, and pins `actuate.py`'s to its two write functions. The policy (`controller.py`) runs offline only so far; its proposals, and moves a person approves one by one, come in later stages.
+**v2 adds writes, in one module.** `twobunch_deploy/actuate.py` is the only code that writes: the two L1 phase setpoints and the L2 phase multiknob, each write at most one policy action, within a budget per session, only after `arm()`, each logged before and after in a ledger that `undo_all()` reverses. `tests/test_read_only.py` fails on a write call anywhere else, and pins `actuate.py`'s to its two write functions. The policy (`controller.py`) proposes moves from each valid reading (`advise.py`); unarmed it only logs them (shadow mode), armed a person approves each one, and `advise.py` applies it through `actuate.py`'s moves, with the same checks, budget and ledger.
 
 ## Stages
 
@@ -24,6 +24,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | S9 | The v1 console (`console.ipynb`) |
 | W1 (v2) | The write path (`actuate.py`): `arm`, `move_l1`, `move_l2`, `undo_all`, the ledger; the write session with the beam stopped at TD11 (`hold_test`, `staircase`) |
 | P1a (v2) | The policy: its numpy runner and the inputs it is given, checked against the training env; no machine access |
+| P1b (v2) | Goals, episodes and proposals (`advise.py`): shadow mode, and the cycle that applies each proposal a person approves |
 
 ## Layout
 
@@ -37,6 +38,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | `twobunch_deploy/actuate.py` | The only writes (v2): arming, the moves, the ledger, undo |
 | `twobunch_deploy/viz.py` | Plots |
 | `twobunch_deploy/controller.py` | The policy in numpy and its inputs, built as training built them |
+| `twobunch_deploy/advise.py` | Goals, episodes, proposals and the approved cycle; writes only through `actuate.py` |
 | `policies/<name>/` | An exported policy (twobunch-s2e-rl `deploy_export`): manifest, weights, and the reference data its tests check |
 | `console.ipynb` | The calls for a session at the machine, with its checklists |
 | `commissioning.ipynb` | One section per stage |
