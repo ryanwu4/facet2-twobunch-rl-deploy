@@ -1,0 +1,150 @@
+{
+ "name": "nc_zs_screen_noblen_jit_s0",
+ "source": {
+  "logdir": "logs/2026-10-19/nocrop/nc_zs_screen_noblen_jit_s0",
+  "checkpoint": "final_policy.pt",
+  "checkpoint_sha256": "701e8820ea8287ee88ba04d075da046d2a89c3ac7605ad2d1aadfd22c4d28af1",
+  "run_git_hash": "c3ad1eabe824b9557fcbb96b3c435fd63e6910cf",
+  "run_git_dirty": true
+ },
+ "exported": {
+  "time": "2026-11-06T18:13:25-08:00",
+  "exporter_git_hash": "39c880de7351f4c95977600e5f364b455958a8c5",
+  "torch": "2.11.0+cu130"
+ },
+ "controls": [
+  "L1PhaseSet",
+  "L2PhaseSet"
+ ],
+ "action_step": [
+  0.25,
+  0.3
+ ],
+ "actuators": [
+  "direct_rb",
+  "direct"
+ ],
+ "blocks": [
+  {
+   "name": "cumulative_change",
+   "size": 2
+  },
+  {
+   "name": "features",
+   "size": 6
+  },
+  {
+   "name": "goal_error",
+   "size": 2
+  },
+  {
+   "name": "error_trend",
+   "size": 2
+  },
+  {
+   "name": "last_action",
+   "size": 2
+  },
+  {
+   "name": "gain_estimate",
+   "size": 2
+  },
+  {
+   "name": "history",
+   "size": 90
+  }
+ ],
+ "inputs": 106,
+ "features": [
+  {
+   "key": "bunch_spacing",
+   "transform": "identity",
+   "mean": 0.00012650446140273852,
+   "std": 0.00012527497962913316
+  },
+  {
+   "key": "drive_sigma_z",
+   "transform": "log10",
+   "mean": -4.311444062944472,
+   "std": 0.23566812063875087
+  },
+  {
+   "key": "screen_valid_deployed",
+   "transform": "identity",
+   "mean": 0.0,
+   "std": 1.0
+  },
+  {
+   "key": "drive_charge_fraction",
+   "transform": "identity",
+   "mean": 0.0,
+   "std": 1.0
+  },
+  {
+   "key": "spacing_goal",
+   "transform": "identity",
+   "mean": 0.00012650446140273852,
+   "std": 0.00012527497962913316
+  },
+  {
+   "key": "drive_sigma_z_goal",
+   "transform": "log10",
+   "mean": -4.311444062944472,
+   "std": 0.23566812063875087
+  }
+ ],
+ "goals": [
+  {
+   "key": "bunch_spacing",
+   "goal_key": "spacing_goal",
+   "transform": "identity",
+   "scale": 1e-05
+  },
+  {
+   "key": "drive_sigma_z",
+   "goal_key": "drive_sigma_z_goal",
+   "transform": "log10",
+   "scale": 0.0414
+  }
+ ],
+ "history": 16,
+ "episode_length": 128,
+ "network": [
+  {
+   "type": "linear",
+   "weight": "w0",
+   "bias": "b0"
+  },
+  {
+   "type": "elu"
+  },
+  {
+   "type": "layernorm",
+   "weight": "w2",
+   "bias": "b2",
+   "eps": 1e-05
+  },
+  {
+   "type": "linear",
+   "weight": "w3",
+   "bias": "b3"
+  },
+  {
+   "type": "elu"
+  },
+  {
+   "type": "layernorm",
+   "weight": "w5",
+   "bias": "b5",
+   "eps": 1e-05
+  },
+  {
+   "type": "linear",
+   "weight": "w6",
+   "bias": "b6"
+  },
+  {
+   "type": "tanh"
+  }
+ ]
+}

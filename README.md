@@ -20,6 +20,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | S7 | L2 subbooster phases |
 | S8 | Bunch length, drift monitors and magnets |
 | S9 | The v1 console (`console.ipynb`) |
+| P1a | The policy (v2): its numpy runner and the inputs it is given, checked against the training env; no machine access |
 
 ## Layout
 
@@ -31,6 +32,8 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | `twobunch_deploy/screen.py` | Image processing and step readings |
 | `twobunch_deploy/session.py` | The calls the notebooks make |
 | `twobunch_deploy/viz.py` | Plots |
+| `twobunch_deploy/controller.py` | The policy in numpy and its inputs, built as training built them |
+| `policies/<name>/` | An exported policy (twobunch-s2e-rl `deploy_export`): manifest, weights, and the reference data its tests check |
 | `console.ipynb` | The calls for a session at the machine, with its checklists |
 | `commissioning.ipynb` | One section per stage |
 | `tests/` | Offline tests; never imported by the package |
@@ -43,6 +46,8 @@ pixi run code-hash   # sha256 of the package source
 ```
 
 The camera tests run the package's Channel Access calls against a soft IOC (`tests/soft_ioc.py`, caproto) that serves real DAQ frames under the camera's PV name, the DAQ's TCAV and L1 readbacks and bunch-length signals of each frame, its L2 and magnet values, and stand-ins for the drift PVs, on 127.0.0.1 only. The DAQ files are not in this repo, so these tests run only where they are (`DTOTR2_DAQ`, the TEST_15668 `images/DTOTR2` directory, with the run's `.mat` two levels up) and are skipped in CI. So are the tests that compare the image processing, TCAV tags and step readings with Yiheng Ye's DAQ analysis classes, twobunch-s2e-rl's `online/features.py` and its v7 replay of the DAQ runs: they need those, and the DAQ runs, next to this repo. The first Channel Access call starts EPICS's standard `caRepeater` helper process, which keeps running afterwards.
+
+The controller tests need nothing but the policy's own files: its reference inputs and actions from the torch policy, and episodes of its training env (with the changes deployment makes) whose inputs `controller.py` must rebuild step by step.
 
 ## On the machine
 
