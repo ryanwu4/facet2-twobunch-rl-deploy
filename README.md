@@ -4,7 +4,7 @@ Runs the FACET-II two-bunch spacing controller on the machine. The controller it
 
 **v1 is read-only.** It reads the DTOTR2 XTCAV camera and a few phase, bunch-length and magnet PVs and turns the frames into the readings the controller uses.
 
-**v2 adds writes, in one module.** `twobunch_deploy/actuate.py` is the only code that writes: the two L1 phase setpoints and the L2 phase multiknob, each write at most one policy action, within a budget per session, only after `arm()`, each logged before and after in a ledger that `undo_all()` reverses. `tests/test_read_only.py` fails on a write call anywhere else, and pins `actuate.py`'s to its two write functions. The policy, and moves a person approves one by one, come in later stages.
+**v2 adds writes, in one module.** `twobunch_deploy/actuate.py` is the only code that writes: the two L1 phase setpoints and the L2 phase multiknob, each write at most one policy action, within a budget per session, only after `arm()`, each logged before and after in a ledger that `undo_all()` reverses. `tests/test_read_only.py` fails on a write call anywhere else, and pins `actuate.py`'s to its two write functions. The policy (`controller.py`) runs offline only so far; its proposals, and moves a person approves one by one, come in later stages.
 
 ## Stages
 
@@ -23,6 +23,7 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | S8 | Bunch length, drift monitors and magnets |
 | S9 | The v1 console (`console.ipynb`) |
 | W1 (v2) | The write path (`actuate.py`): `arm`, `move_l1`, `move_l2`, `undo_all`, the ledger; the write session with the beam stopped at TD11 (`hold_test`, `staircase`) |
+| P1a (v2) | The policy: its numpy runner and the inputs it is given, checked against the training env; no machine access |
 
 ## Layout
 
@@ -35,6 +36,8 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | `twobunch_deploy/session.py` | The calls the notebooks make |
 | `twobunch_deploy/actuate.py` | The only writes (v2): arming, the moves, the ledger, undo |
 | `twobunch_deploy/viz.py` | Plots |
+| `twobunch_deploy/controller.py` | The policy in numpy and its inputs, built as training built them |
+| `policies/<name>/` | An exported policy (twobunch-s2e-rl `deploy_export`): manifest, weights, and the reference data its tests check |
 | `console.ipynb` | The calls for a session at the machine, with its checklists |
 | `commissioning.ipynb` | One section per stage |
 | `tests/` | Offline tests; never imported by the package |
@@ -47,6 +50,8 @@ pixi run code-hash   # sha256 of the package source
 ```
 
 The camera tests run the package's Channel Access calls against a soft IOC (`tests/soft_ioc.py`, caproto) that serves real DAQ frames under the camera's PV name, the DAQ's TCAV and L1 readbacks and bunch-length signals of each frame, its L2 and magnet values, and stand-ins for the drift PVs, on 127.0.0.1 only. The write-path tests add a stand-in for the AIDA-PVA multiknob service (`tests/mkb_server.py`, p4p), which moves the soft IOC's subbooster setpoints as the real knob does. The DAQ files are not in this repo, so these tests run only where they are (`DTOTR2_DAQ`, the TEST_15668 `images/DTOTR2` directory, with the run's `.mat` two levels up) and are skipped in CI. So are the tests that compare the image processing, TCAV tags and step readings with Yiheng Ye's DAQ analysis classes, twobunch-s2e-rl's `online/features.py` and its v7 replay of the DAQ runs: they need those, and the DAQ runs, next to this repo. The first Channel Access call starts EPICS's standard `caRepeater` helper process, which keeps running afterwards.
+
+The controller tests need nothing but the policy's own files: its reference inputs and actions from the torch policy, and episodes of its training env (with the changes deployment makes) whose inputs `controller.py` must rebuild step by step.
 
 ## On the machine
 
