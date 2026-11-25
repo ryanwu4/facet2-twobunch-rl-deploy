@@ -229,6 +229,20 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - `tests/test_controller.py::test_inputs_reproduce_the_training_env` must apply the L2 dead zone to the clipped change before `advance()`, as `advise.apply()` does (an L2 change under `MIN_L2_MOVE` is not written, so the observed change is 0). The new policy's exported episodes include such steps; the incumbent's training env had no dead zone, so its test never met one.
 - The exported episodes may end before 40 steps when a reading stays unreadable (the runner would hold there); the test should loop over the actions it has.
 
+**R13. The energy cut from the right polarity. Proposed (found 11-25 in the E331 replays).**
+- `screen.step_cut` takes the step's energy cut from the camera's "+" frames. On an E331-type session, where the TCAV sign pairing is reversed against E300 (11-03), those are the physically opposite polarity.
+- The TCAV's energy kick changes sign with the polarity, so at large spacing their valley jumps about 18 rows to another dip. That swaps the bunch labels: the far side of the scan reads negative, and a band past the crossing reads positive.
+- Taking the cut from the frames whose streak matches E300's "+" polarity fixes most of it:
+
+  | E331 pair | 21_22 | 24_23 | 25_27 | 30_32 | 34_33 |
+  |---|---|---|---|---|---|
+  | Incumbent within 10 µm, as built | 0.47 | 0.47 | 0.27 | 0.44 | 0.36 |
+  | Cut from the matching frames | 0.36 | 0.47 | 0.66 | 0.53 | 0.45 |
+
+  (The 16029 / 16028 pair is skipped: unreadable at L1 −21.) Replays in twobunch-s2e-rl `results/rl_newframe/replay/`.
+- Change: `step()` / `read_step()` take a `cut_polarity` ("+" or "−", default "+"). The console checklist sets it per session from the session's TCAV sign pairing, the same check that fixes the streak sign.
+- Done when an offline test on an E331 pair reproduces the replay's `_cutminus` readings.
+
 **Not to change** (training depends on these):
 - One write per proposal, at most one action step (0.25° / 0.3°).
 - The bookkeeping in 3.5: declines as 0/0, the change as written, the 0.02° L2 dead zone, holds without an advance, the episode restart, and goals as the mean of 3 readings with no write between.
@@ -256,6 +270,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 
 ## 6. Open questions for ops and Ryan
 
+- **R13: is the gate replay "as built" or with the polarity fix?** E331 readings are much better with it on two of five pairs, worse on one.
 - **Q1FF width (provisional ±5%).** With Q1FF at ±15% independently, 33% of the simulated screen readings swap the drive and witness labels (the bunch split fails); ±5% gives 2%. The 11-05 machine state had Q1FF at +3.1%. A pre-shift check on Q1FF within ±5% of design belongs in the envelope checklist if this stays.
 
 - Which loop writes PREQ (the BC11 bunch-length feedback?), and whether turning it back on is bumpless (Zack).
