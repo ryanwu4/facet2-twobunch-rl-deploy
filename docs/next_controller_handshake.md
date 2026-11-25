@@ -1,6 +1,6 @@
 # The next controller: what it assumes, the handshake, and the runner changes
 
-**Written 2026-11-25. Decisions are Ryan's, from the 11-25 interview. Items marked "proposed" still need his approval before work starts.**
+**Written 2026-11-25. Every decision here is Ryan's, from the 11-25 interview and its follow-up; all runner items R1–R12 are decided.**
 
 **Who this is for.** The agent that will change the runner (this repo), and Ryan when he reviews it. The controller is trained in twobunch-s2e-rl (plan: `docs/next_controller_plan.md` on branch `rl-newframe`). It replaces `nc_zs_screen_noblen_jit_s0` (the incumbent) for the December 3–4 beam time.
 
@@ -47,7 +47,7 @@ Each line is something the policy was trained for. Outside these ranges its beha
 | Bunch order | Witness trails the drive, so spacing is positive | spacing goals 100–400 µm, starts readable and ≥ 100 µm | goal check (R5); negative reading (R4) | Ryan 11-25 |
 | Drive σz goal | A recorded reading | the training goal distribution (the exporter writes the range) | goal check (R5) | – |
 | TCAV | Phased and calibrated by ops at the session's optics. Calibration error within ±10% | 18–32 MV | checklist | Ryan 11-25 |
-| Sector-20 optics | FF quads Q5FF–Q0FF within ±15% of design; BC20 sextupoles within ±20%; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
+| Sector-20 optics | FF quads Q5FF–Q0FF within ±15% of design; BC20 sextupoles within ±35% of the 04-15 readbacks; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
 | Injector | Two bunches, total charge 1.6–2.2 nC, delay 7–10 ps, laser pulses 1.5–2.3 ps each | uniform over that span | checklist (ops' numbers) | Ryan 11-25 |
 | Energy setpoints | Energy feedbacks hold BC14/BC20 within ±4.5 / ±10 MeV per session, about 0.1% step to step | as stated | – | Ryan 11-25 |
 | Image | Extra blur 0.5–1.5× what the image fits needed (about 130 µm on the screen along the streak, 1.8–2.9 px along energy) | as stated | – | Ryan 11-25 |
@@ -107,7 +107,7 @@ The exporter writes the ranges the policy was trained on:
   "tcav_MV": [18, 32],
   "streak_calibration_error": 0.10,
   "ff_quad_fraction": {"magnets": ["Q5FF", "Q4FF", "Q3FF", "Q2FF", "Q1FF", "Q0FF"], "max": 0.15},
-  "sextupole_fraction": 0.20,
+  "sextupole_fraction": 0.35,
   "mover_mm": 0.75,
   "charge_nC": [1.6, 2.2],
   "delay_ps": [7, 10],
@@ -142,7 +142,7 @@ The runner reads it only to print the pre-shift checklist (R10) and the goal che
 
 ## 4. Runner changes (work list)
 
-Each item gives what to change, why, where, how it's checked, and its status. Statuses: **decided** (Ryan 11-25), **proposed** (Ryan approves first), **verify** (should need no code change; confirm with tests).
+Each item gives what to change, why, where, how it's checked, and its status. Statuses: **decided** (Ryan 11-25) or **verify** (should need no code change; confirm with tests). Every item is decided.
 
 **R1. Swap in the new policy. Decided: the new policy only.**
 - `advise.POLICY` (`advise.py:32`) and the test's `NAME` (`tests/test_controller.py:11`) take the new name.
@@ -165,35 +165,35 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - The counter resets on a valid reading.
 - Done when offline tests feed each kind of fault in sequence.
 
-**R4. A negative spacing reading counts as a beam-state fault. Proposed.**
+**R4. A negative spacing reading counts as a beam-state fault. Decided.**
 - The policy was trained only with the witness trailing. A valid reading with spacing < 0 (bunch order reversed, or a wrong streak sign) is outside what it knows.
 - Change: `values()` returns None for it and the reading is held with the check "witness trailing".
 - A wrong streak sign then holds every reading, which is a safe failure the checklist catches.
 - Done when the offline test of a reversed reading holds.
 
-**R5. Goal check. Proposed.**
-- `record_goal()` refuses a goal whose spacing is outside `envelope.spacing_goal_m` (100–400 µm) or whose σz is outside `envelope.drive_sigma_z_goal_m`, and says why.
-- This is a refusal like the ones already in `record_goal()`. It can't be a once-per-shift check, because each goal differs.
+**R5. Goal check. Decided: warn and record.**
+- `record_goal()` prints a warning when a goal's spacing is outside `envelope.spacing_goal_m` (100–400 µm) or its σz is outside `envelope.drive_sigma_z_goal_m`, saying which and by how much.
+- The goal is still recorded and usable. The operator decides.
 
-**R6. Capture length for the beam rate. Proposed; Ryan picks the version.**
+**R6. Capture length for the beam rate. Decided: version (a), the checklist.**
 - Training assumes 15–35 kept frames per polarity and a 20–45 s period.
   - Machine: 10 Hz for 15 s gave a median of 17–19 kept frames per polarity.
   - 5 Hz for 30 s gave 34 + / 25 −.
   - 5 Hz for 15 s is too short.
 - (a) Minimal: the console checklist sets `seconds` from the beam rate (15 s at 10 Hz, 30 s at 5 Hz). No code change.
 - (b) Capture by frame count: `acquire.capture` runs until it has ≥ 20 kept frames per polarity or a time cap. This is a change in S4-era code.
-- Recommend (a).
+- Do (a): a checklist line in `console.ipynb`. Leave `acquire.capture` unchanged.
 
-**R7. Settling after a write. Proposed; measure first.**
+**R7. Settling after a write. Decided: measure first.**
 - Not built: the frames of the first step after a write are only dropped by the existing ≥ 1 s per-polarity-window rule.
 - Write timing (W1): a PREQ put completes in about 0.02 s; a multiknob turn plus its setpoint confirmation takes 0.64–1.31 s. The beam's settling after a write has never been measured with beam.
 - Change: `step(drop_after_write_s=1.0)` drops frames within that time of the step's start when a write was sent just before.
-- Or measure first in the first approved-write session: compare the first and second halves of the step after a write. Recommend measuring first.
+- Measure first, in the first approved-write session: compare the first and second halves of each step after a write. Build the drop above only if they differ. For now, nothing beyond a way to compare the two halves from the saved step records, if that isn't already possible.
 
 **R8. Unattended mode. Decided that closed loop is in scope; the switch is Ryan's judgement on the day.**
 - Change: `cycle(..., unattended=True)` applies the proposal without `input()`.
 - Each decision is logged as "applied (unattended)".
-- It runs at most N unattended steps per armed session. N is set when switching; Ryan to pick a default, for example 30.
+- No step cap (Ryan). It runs until one of the stops below, or until the operator stops it.
 - It drops back to approved mode on:
   - any hold;
   - a failed write;
@@ -202,12 +202,12 @@ Each item gives what to change, why, where, how it's checked, and its status. St
   - an operator interrupt (Ctrl-C between cycles leaves no undecided proposal).
 - This is new write-path behaviour, so it gets its own PR and machine check after the approved cycle has run on two-bunch beam.
 
-**R9. Cycle period in the log. Proposed.**
+**R9. Cycle period in the log. Decided.**
 - Log the time between readings in the episode log, and print a warning in the proposal line when it exceeds 45 s.
 - Training assumed 20–45 s per step, and the drift per step grows with the period.
 - Logging only; no refusal.
 
-**R10. The pre-shift checklist reads the envelope. Proposed.**
+**R10. The pre-shift checklist reads the envelope. Decided.**
 - A `console.ipynb` cell prints the policy's envelope next to the live values, for the operator to tick:
   - TCAV amplitude readback and ops' calibration (value and sign);
   - beam rate;
@@ -217,7 +217,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
   - the budget about to be armed.
 - Data and printing only.
 
-**R11. v1 leftovers. Proposed.**
+**R11. v1 leftovers. Decided.**
 - The −10000 sentinel of the LI12–14 PHAS readbacks enters the medians: exclude it.
 - The capture-fraction figure assumes 10 Hz.
 - The B5D36 supply's units.
@@ -259,7 +259,6 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - The TCAV amplitude to ask for: JP's advice is the best resolution that still stays on the screen. Who runs the toggler.
 - The sector-20 optics in December: the 11-05 state (FF quads −17% to +12% from design) or design.
 - The two-bunch set-up ops will give us (charge, delay, pulse lengths), to check against the envelope.
-- R6 version, R7 (measure first or build), R8's step cap.
 
 ## References
 
