@@ -47,7 +47,7 @@ Each line is something the policy was trained for. Outside these ranges its beha
 | Bunch order | Witness trails the drive, so spacing is positive | spacing goals 100–400 µm, starts readable and ≥ 100 µm | goal check (R5); negative reading (R4) | Ryan 11-25 |
 | Drive σz goal | A recorded reading | the training goal distribution (the exporter writes the range) | goal check (R5) | – |
 | TCAV | Phased and calibrated by ops at the session's optics. Calibration error within ±10% | 18–32 MV | checklist | Ryan 11-25 |
-| Sector-20 optics | FF quads Q5FF–Q0FF within ±15% of design; BC20 sextupoles within ±35% of the 04-15 readbacks; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
+| Sector-20 optics | FF quads Q5FF, Q4FF, Q3FF, Q2FF, Q0FF within ±15% of design, Q1FF within ±5% (provisional, see §6); BC20 sextupoles within ±35% of the 04-15 readbacks; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
 | Injector | Two bunches, total charge 1.6–2.2 nC, delay 7–10 ps, laser pulses 1.5–2.3 ps each | uniform over that span | checklist (ops' numbers) | Ryan 11-25 |
 | Energy setpoints | Energy feedbacks hold BC14/BC20 within ±4.5 / ±10 MeV per session, about 0.1% step to step | as stated | – | Ryan 11-25 |
 | Image | Extra blur 0.5–1.5× what the image fits needed (about 130 µm on the screen along the streak, 1.8–2.9 px along energy) | as stated | – | Ryan 11-25 |
@@ -106,7 +106,7 @@ The exporter writes the ranges the policy was trained on:
   "drive_sigma_z_goal_m": ["from the training goal distribution, 5-95 %"],
   "tcav_MV": [18, 32],
   "streak_calibration_error": 0.10,
-  "ff_quad_fraction": {"magnets": ["Q5FF", "Q4FF", "Q3FF", "Q2FF", "Q1FF", "Q0FF"], "max": 0.15},
+  "ff_quad_fraction": {"Q5FF": 0.15, "Q4FF": 0.15, "Q3FF": 0.15, "Q2FF": 0.15, "Q1FF": 0.05, "Q0FF": 0.15},
   "sextupole_fraction": 0.35,
   "mover_mm": 0.75,
   "charge_nC": [1.6, 2.2],
@@ -223,9 +223,11 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - The B5D36 supply's units.
 - From the commissioning note's open items.
 
-**R12. Inputs read from the manifest. Verify.**
+**R12. Inputs read from the manifest. Verify, and one test change.**
 - The new policy has 4 features and `[direct, direct]` actuators. `controller.Policy` accepts both today.
 - Confirm with the new policy's tests, and update `controller.READING` and the module docstring (which says 106) to match.
+- `tests/test_controller.py::test_inputs_reproduce_the_training_env` must apply the L2 dead zone to the clipped change before `advance()`, as `advise.apply()` does (an L2 change under `MIN_L2_MOVE` is not written, so the observed change is 0). The new policy's exported episodes include such steps; the incumbent's training env had no dead zone, so its test never met one.
+- The exported episodes may end before 40 steps when a reading stays unreadable (the runner would hold there); the test should loop over the actions it has.
 
 **Not to change** (training depends on these):
 - One write per proposal, at most one action step (0.25° / 0.3°).
@@ -253,6 +255,8 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 8. **Close:** `end_episode()`; `undo_all()` or keep; `disarm()`; ops restore the feedbacks.
 
 ## 6. Open questions for ops and Ryan
+
+- **Q1FF width (provisional ±5%).** With Q1FF at ±15% independently, 33% of the simulated screen readings swap the drive and witness labels (the bunch split fails); ±5% gives 2%. The 11-05 machine state had Q1FF at +3.1%. A pre-shift check on Q1FF within ±5% of design belongs in the envelope checklist if this stays.
 
 - Which loop writes PREQ (the BC11 bunch-length feedback?), and whether turning it back on is bumpless (Zack).
 - 10 Hz for the shift.
