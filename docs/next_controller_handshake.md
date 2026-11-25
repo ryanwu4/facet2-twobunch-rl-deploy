@@ -1,0 +1,274 @@
+# The next controller: what it assumes, the handshake, and the runner changes
+
+**Written 2026-11-25. Decisions are Ryan's, from the 11-25 interview. Items marked "proposed" still need his approval before work starts.**
+
+**Who this is for.** The agent that will change the runner (this repo), and Ryan when he reviews it. The controller is trained in twobunch-s2e-rl (plan: `docs/next_controller_plan.md` on branch `rl-newframe`). It replaces `nc_zs_screen_noblen_jit_s0` (the incumbent) for the December 3–4 beam time.
+
+**The rules for this repo still hold** (README, and Ryan's rules for machine code):
+- Keep the code minimal; Ryan reviews every line.
+- `actuate.py` stays the only module that writes.
+- A check that can be done once per shift belongs in the console checklist, not in runtime code.
+- One stage per PR. Each is tested offline, then on the machine, and merged only after its check passes.
+
+## 1. What changes, in one paragraph
+
+The new controller is trained on the energy-feedback simulation and its surrogate. Its training matches how this runner and the machine actually behave:
+- the session budget clips its moves;
+- a step takes 20–45 s;
+- proposals are sometimes declined;
+- L1's change is the commanded PREQ change;
+- L2 changes under 0.02° are not written;
+- invalid readings are held.
+
+It sees the machine as one of many hidden states: injector state, sector-20 optics, TCAV voltage and calibration, image blur, energy setpoints and actuator gains. It is trained only with the witness trailing the drive, on spacing goals of 100–400 µm.
+
+For the runner this means:
+- a new policy directory;
+- a smaller input vector (104 instead of 106), which needs no code change;
+- a budget set per session;
+- an alert when beam-state faults persist;
+- an optional unattended mode, plus a few checklist and capture items.
+
+## 2. What the controller assumes about the machine
+
+Each line is something the policy was trained for. Outside these ranges its behaviour is untested.
+
+| Item | Assumption | Trained range | Checked by | Source |
+|---|---|---|---|---|
+| L1 actuator | Both `KLYS:LI11:{11,21}:PREQ`, the same delta to each. PREQ's feedback off | gain beam/commanded 0.7–1.3 | `arm()` (QUIET_S), existing | W1; deploy plan |
+| L1 observed change | The commanded PREQ delta, not the FAST_PACTBR readback | – | `advise.apply()`, existing | Ryan 11-25 |
+| L2 actuator | `l2_phase` multiknob, a delta, moving LI12–14 1:1. LI12–14 bunch-length trim off. Energy feedbacks on | gain model/knob N(0.85, 0.12), clipped 0.6–1.1 | checklist | Ryan 11-25; Zack 11-19 (27 cos θ1 = 5 + 22 cos θ2) |
+| L2 small moves | A change under 0.02° is not written and counts as 0 | same rule in training | `MIN_L2_MOVE`, existing | – |
+| Budget | Net move per armed session, counted from `arm()`, detune moves included | L1 1.0–3.0°, L2 1.5–4.0°. Up to half already used by the detune when the episode starts | checklist at `arm()` (R2) | Ryan 11-25 |
+| Step period | Reading start to next reading start | 20–45 s; ask ops for 10 Hz | checklist; period logged (R9) | Ryan 11-25 |
+| Frames per step | Kept frames per polarity in a valid reading | 15–35 | `MIN_FRAMES` = 15, existing; capture length (R6) | commissioning 11-04 |
+| Declines | Declined, expired, unanswered and shadow proposals count as action 0, change 0 | about 20% of proposals | existing | – |
+| Invalid readings | No proposal, no advance; the next valid reading comes in with the last decision's outcome | the same in training (a held step is invisible to the policy; drift goes on) | existing; alert (R3) | Ryan 11-25 |
+| Bunch order | Witness trails the drive, so spacing is positive | spacing goals 100–400 µm, starts readable and ≥ 100 µm | goal check (R5); negative reading (R4) | Ryan 11-25 |
+| Drive σz goal | A recorded reading | the training goal distribution (the exporter writes the range) | goal check (R5) | – |
+| TCAV | Phased and calibrated by ops at the session's optics. Calibration error within ±10% | 18–32 MV | checklist | Ryan 11-25 |
+| Sector-20 optics | FF quads Q5FF–Q0FF within ±15% of design; BC20 sextupoles within ±20%; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
+| Injector | Two bunches, total charge 1.6–2.2 nC, delay 7–10 ps, laser pulses 1.5–2.3 ps each | uniform over that span | checklist (ops' numbers) | Ryan 11-25 |
+| Energy setpoints | Energy feedbacks hold BC14/BC20 within ±4.5 / ±10 MeV per session, about 0.1% step to step | as stated | – | Ryan 11-25 |
+| Image | Extra blur 0.5–1.5× what the image fits needed (about 130 µm on the screen along the streak, 1.8–2.9 px along energy) | as stated | – | Ryan 11-25 |
+
+## 3. The handshake
+
+### 3.1 Files
+
+`policies/<name>/` holds what the exporter (twobunch-s2e-rl `deploy_export`) writes. These are unchanged:
+- `policy.json`: the manifest.
+- `weights.npz`: `obs_mean`, `obs_var`, `w*`, `b*`.
+- `reference.npz`: inputs → actions from the torch policy, matched to atol 1e-5.
+- `episodes.npz`: episodes from the training environment that `controller.Episode` must rebuild step by step, inputs to 1e-4.
+
+One change on the training side: the episodes in `episodes.npz` come from the new environment. They include budget clips, declines, L2 moves under 0.02° and held invalid steps, so the tests exercise the runner's bookkeeping on those cases.
+
+### 3.2 `policy.json`
+
+| Field | Incumbent | New policy |
+|---|---|---|
+| `controls` | `[L1PhaseSet, L2PhaseSet]` | unchanged |
+| `action_step` | `[0.25, 0.3]` | unchanged (≤ `pvs.WRITE` steps) |
+| `actuators` | `[direct_rb, direct]` | `[direct, direct]` |
+| `blocks` | the seven of `controller.BLOCKS` | unchanged names and order |
+| `features` | spacing, σz, `screen_valid_deployed`, `drive_charge_fraction`, the two goals (6) | spacing, σz, the two goals (4). The charge fraction is dropped (real light share 0.46–0.69 between runs and dependent on the streak sign; Ryan 11-25). The valid flag is dropped: it is always 1 at the runner and now in training too |
+| `goals` | spacing (identity, scale 1e-5 m); σz (log10, scale 0.0414) | unchanged |
+| `history` | 16 | unchanged |
+| `episode_length` | 128 | unchanged |
+| `inputs` | 106 | 104 |
+| `envelope` | – | new, see 3.4 |
+
+### 3.3 Input vector (104)
+
+| Block | Size | Content |
+|---|---|---|
+| `cumulative_change` | 2 | each control's observed change since the episode began, deg |
+| `features` | 4 | spacing (identity), σz (log10), spacing goal, σz goal, each z-scored with the manifest's mean and std |
+| `goal_error` | 2 | (t(reading) − t(goal)) / scale |
+| `error_trend` | 2 | the goal error's change over the last step |
+| `last_action` | 2 | the policy's last output; 0 at the start and after a decline |
+| `gain_estimate` | 2 | 0 |
+| `history` | 90 | 15 × [goal error before the step, the action before the one applied, the step's observed change], oldest first, zeros before the episode began (training's pairing, kept) |
+
+Normalisation is (x − obs_mean) / √(obs_var + 1e-5), with no clipping. The features block is read from the manifest's list (`controller.Episode._features`). `advise.values()` may return keys the policy doesn't use; they are ignored. So the smaller block needs no code change. That should be confirmed by the new policy's tests (R12).
+
+### 3.4 The `envelope` block (new; data only, read by the console checklist)
+
+The exporter writes the ranges the policy was trained on:
+
+```json
+"envelope": {
+  "step_period_s": [20, 45],
+  "kept_frames_per_polarity": [15, 35],
+  "budget_deg": {"L1PhaseSet": [1.0, 3.0], "L2PhaseSet": [1.5, 4.0]},
+  "spacing_goal_m": [1.0e-4, 4.0e-4],
+  "drive_sigma_z_goal_m": ["from the training goal distribution, 5-95 %"],
+  "tcav_MV": [18, 32],
+  "streak_calibration_error": 0.10,
+  "ff_quad_fraction": {"magnets": ["Q5FF", "Q4FF", "Q3FF", "Q2FF", "Q1FF", "Q0FF"], "max": 0.15},
+  "sextupole_fraction": 0.20,
+  "mover_mm": 0.75,
+  "charge_nC": [1.6, 2.2],
+  "delay_ps": [7, 10],
+  "feedbacks": {"PREQ (BC11 bunch length)": "off", "LI12-14 bunch-length trim": "off", "energy": "on"},
+  "witness": "trailing"
+}
+```
+
+The runner reads it only to print the pre-shift checklist (R10) and the goal check (R5). Nothing else depends on it.
+
+### 3.5 One step, and what training does for each part
+
+| Runner (this repo) | Training (twobunch-s2e-rl) |
+|---|---|
+| `step()`: one reading from the frames kept over the capture | One reading from 15–35 simulated shots per polarity, with per-shot noise, the jitter map and outliers |
+| Invalid reading: no proposal, the episode doesn't advance | The env re-measures (time passes, drift goes on) without a policy step. The policy never sees an invalid reading. A beam that stays unreadable ends the episode with a penalty: the operator steps in |
+| Valid reading: `advance(outcome, change, reading)`, then `act()` | The same pairing of action, change and next valid reading |
+| `clip(a, step, net, budget)`; net counted from `arm()` | The same clip, with the budget drawn per episode and a pre-used net of up to ±half the budget at the start |
+| L2 change under 0.02° not written: change 0 | The same dead zone |
+| Declined / expired / shadow: action 0, change 0 | 20% random declines with the same bookkeeping |
+| Applied: action = output; change = written delta (L1 PREQ delta; L2 multiknob delta) | L1 and L2 observed change = commanded change. The beam moves by the hidden gain times it, plus drift |
+| Episode restarts after 128 steps on the same goal, history zeroed | 128-step episodes, with a new goal every 16–48 steps |
+| Goal = mean of 3 valid readings, no write between | The goal is the noise-free reading at a reachable, readable control point with spacing ≥ 100 µm |
+
+### 3.6 Conventions
+
+- **Units.** Lengths in m inside the policy, angles in deg.
+- **Spacing is signed.** It is drive minus witness z centroid. Positive means the witness trails.
+  - The drive is the energy band with the majority of the charge.
+  - The sign also depends on the sign of the streak calibration passed to `step()`. E331's TCAV sign pairing was reversed against E300's, so check it each session (checklist).
+- **σz** is the drive's rms length from the two polarities' variances.
+
+## 4. Runner changes (work list)
+
+Each item gives what to change, why, where, how it's checked, and its status. Statuses: **decided** (Ryan 11-25), **proposed** (Ryan approves first), **verify** (should need no code change; confirm with tests).
+
+**R1. Swap in the new policy. Decided: the new policy only.**
+- `advise.POLICY` (`advise.py:32`) and the test's `NAME` (`tests/test_controller.py:11`) take the new name.
+- `policies/nc_zs_screen_noblen_jit_s0/` leaves the working tree; git history keeps it.
+- Done when the new policy's reference and episode tests pass.
+
+**R2. The budget as a session setting. Decided.**
+- Today the budget is a constant, `pvs.WRITE[kind]["budget"]` (1.0 / 1.5).
+- Change: `actuate.arm(name, budget=None)` takes a per-kind budget, defaulting to today's values. It records the budget as the ledger's first line, and `advise.propose()` clips with the armed session's budget.
+- The trained range comes from the envelope: a checklist line at `arm()`, not a refusal in code.
+- Start at ±1.0 / ±1.5 and widen as trust grows (Ryan).
+- Done when offline tests cover a non-default budget (the clip, the ledger line, `undo_all()` after it).
+
+**R3. Alert on persistent beam-state faults. Decided: wait only, the operator decides. No automatic undo.**
+- `propose()` already prints the failed checks and holds. Change: sort each held reading's failed checks into two kinds.
+  - **Acquisition:** too few frames, no row-correction reference, beam intensity. These mean wait and re-read.
+  - **Beam state:** no step cut (no energy valley), |spacing| ≤ 60 µm, edge fraction, negative spacing (R4). These mean the beam itself is unreadable.
+- After 3 consecutive held readings with a beam-state fault, print one clear alert: "operator decision needed". Include the last write (from the ledger) and the net move. Nothing is proposed or written.
+- The operator may `undo_all()`, move by hand, or keep waiting.
+- The counter resets on a valid reading.
+- Done when offline tests feed each kind of fault in sequence.
+
+**R4. A negative spacing reading counts as a beam-state fault. Proposed.**
+- The policy was trained only with the witness trailing. A valid reading with spacing < 0 (bunch order reversed, or a wrong streak sign) is outside what it knows.
+- Change: `values()` returns None for it and the reading is held with the check "witness trailing".
+- A wrong streak sign then holds every reading, which is a safe failure the checklist catches.
+- Done when the offline test of a reversed reading holds.
+
+**R5. Goal check. Proposed.**
+- `record_goal()` refuses a goal whose spacing is outside `envelope.spacing_goal_m` (100–400 µm) or whose σz is outside `envelope.drive_sigma_z_goal_m`, and says why.
+- This is a refusal like the ones already in `record_goal()`. It can't be a once-per-shift check, because each goal differs.
+
+**R6. Capture length for the beam rate. Proposed; Ryan picks the version.**
+- Training assumes 15–35 kept frames per polarity and a 20–45 s period.
+  - Machine: 10 Hz for 15 s gave a median of 17–19 kept frames per polarity.
+  - 5 Hz for 30 s gave 34 + / 25 −.
+  - 5 Hz for 15 s is too short.
+- (a) Minimal: the console checklist sets `seconds` from the beam rate (15 s at 10 Hz, 30 s at 5 Hz). No code change.
+- (b) Capture by frame count: `acquire.capture` runs until it has ≥ 20 kept frames per polarity or a time cap. This is a change in S4-era code.
+- Recommend (a).
+
+**R7. Settling after a write. Proposed; measure first.**
+- Not built: the frames of the first step after a write are only dropped by the existing ≥ 1 s per-polarity-window rule.
+- Write timing (W1): a PREQ put completes in about 0.02 s; a multiknob turn plus its setpoint confirmation takes 0.64–1.31 s. The beam's settling after a write has never been measured with beam.
+- Change: `step(drop_after_write_s=1.0)` drops frames within that time of the step's start when a write was sent just before.
+- Or measure first in the first approved-write session: compare the first and second halves of the step after a write. Recommend measuring first.
+
+**R8. Unattended mode. Decided that closed loop is in scope; the switch is Ryan's judgement on the day.**
+- Change: `cycle(..., unattended=True)` applies the proposal without `input()`.
+- Each decision is logged as "applied (unattended)".
+- It runs at most N unattended steps per armed session. N is set when switching; Ryan to pick a default, for example 30.
+- It drops back to approved mode on:
+  - any hold;
+  - a failed write;
+  - the R3 alert;
+  - a proposal clipped to zero on both controls (budget exhausted);
+  - an operator interrupt (Ctrl-C between cycles leaves no undecided proposal).
+- This is new write-path behaviour, so it gets its own PR and machine check after the approved cycle has run on two-bunch beam.
+
+**R9. Cycle period in the log. Proposed.**
+- Log the time between readings in the episode log, and print a warning in the proposal line when it exceeds 45 s.
+- Training assumed 20–45 s per step, and the drift per step grows with the period.
+- Logging only; no refusal.
+
+**R10. The pre-shift checklist reads the envelope. Proposed.**
+- A `console.ipynb` cell prints the policy's envelope next to the live values, for the operator to tick:
+  - TCAV amplitude readback and ops' calibration (value and sign);
+  - beam rate;
+  - FF quad and sextupole BACT against design (ratio);
+  - mover setpoints;
+  - the feedback states as ops report them;
+  - the budget about to be armed.
+- Data and printing only.
+
+**R11. v1 leftovers. Proposed.**
+- The −10000 sentinel of the LI12–14 PHAS readbacks enters the medians: exclude it.
+- The capture-fraction figure assumes 10 Hz.
+- The B5D36 supply's units.
+- From the commissioning note's open items.
+
+**R12. Inputs read from the manifest. Verify.**
+- The new policy has 4 features and `[direct, direct]` actuators. `controller.Policy` accepts both today.
+- Confirm with the new policy's tests, and update `controller.READING` and the module docstring (which says 106) to match.
+
+**Not to change** (training depends on these):
+- One write per proposal, at most one action step (0.25° / 0.3°).
+- The bookkeeping in 3.5: declines as 0/0, the change as written, the 0.02° L2 dead zone, holds without an advance, the episode restart, and goals as the mean of 3 readings with no write between.
+- The normalisation formula and the clip formula.
+- `tests/test_read_only.py`.
+
+## 5. A session with the new policy (checklist order)
+
+1. **Ops:** two-bunch beam, preferably at 10 Hz.
+   - PREQ feedback off; LI12–14 bunch-length trim off; energy feedbacks on.
+   - TCAV phased and calibrated at the session's optics. Note the value and the sign.
+2. **Pre-shift cell (R10):** every live value inside the envelope, or a decision written down.
+3. **Background, then shadow cycles.**
+   - Witness trailing reads positive.
+   - Readings are valid at the chosen capture length (R6).
+4. **`record_goal()`** for each goal, inside the envelope (R5).
+5. **`arm(name, budget)`** with the budget inside the envelope (R2).
+   - Detune moves count against it. Keep them to at most half the budget, as training assumed.
+6. **`use_goal()`, then approved cycles.**
+   - Unattended cycles (R8) only when Ryan decides.
+7. **Holds:**
+   - acquisition faults: re-read;
+   - after the R3 alert: operator's decision (`undo_all()`, a manual move, or wait).
+8. **Close:** `end_episode()`; `undo_all()` or keep; `disarm()`; ops restore the feedbacks.
+
+## 6. Open questions for ops and Ryan
+
+- Which loop writes PREQ (the BC11 bunch-length feedback?), and whether turning it back on is bumpless (Zack).
+- 10 Hz for the shift.
+- The TCAV amplitude to ask for: JP's advice is the best resolution that still stays on the screen. Who runs the toggler.
+- The sector-20 optics in December: the 11-05 state (FF quads −17% to +12% from design) or design.
+- The two-bunch set-up ops will give us (charge, delay, pulse lengths), to check against the envelope.
+- R6 version, R7 (measure first or build), R8's step cap.
+
+## References
+
+- Interview of 2026-11-25 (Ryan): the decisions above.
+- Machine facts:
+  - `lab-notebook/claude/analyses/2026-10-28_twobunch-v1-commissioning.md`;
+  - `lab-notebook/projects/slac-rl/experiments/2026-11-05_twobunch-v1-campaign-summary.md`;
+  - `lab-notebook/claude/analyses/2026-11-06_twobunch-v2-plan.md`;
+  - the W1 write session `data/srv01/2026-11-06_V2/`.
+- Deploy simulation of the incumbent: twobunch-s2e-rl `results/3_rl_eval/deploy_sim_2026-11-06/summary.json`. Under the budget, 67% of steps were clipped and the median spacing error rose from 14 to 48 µm by step 128; with 40 s steps, 99 µm.
+- Fit findings (optics, TCAV, blur, charge, L2 gain): `lab-notebook/claude/analyses/2026-11-18_fit-assumptions-register.md`, `lab-notebook/projects/slac-rl/experiments/2026-11-22_gpsr-energy-frame-fits-and-reduced-fit.md`.
+- Training and evaluation plan: twobunch-s2e-rl `docs/next_controller_plan.md` (branch `rl-newframe`).
