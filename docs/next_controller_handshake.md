@@ -256,6 +256,17 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - Checklist: arm at 1×. Lower it if the first proposals overshoot (the spacing passes the goal and comes back). Under drift keep it at 0.5× or more: at 0.3× the L2 step can't keep up with the drift in about 9% of 4-step windows, mostly the rare L2 jumps (`results/rl_newframe/diag_step_drift.py` in twobunch-s2e-rl). The 0.02° L2 dead zone is unchanged, so at 0.3× moves under 22% of a full step aren't written.
 - Done when offline tests cover a non-default setting: the clip, the ledger line, the write limit and the inputs.
 
+**R15. Goals kept until removed or replaced. Decided (Ryan 11-26). Found 11-26 reviewing the December run plan.**
+- Today `record_goal()` and `use_goal()` keep goals in the day's folder (`advise._day()`, `data/<date>_V2/goals.json`). A shift that runs past midnight can't use a goal recorded before midnight, and the second beam day starts with none.
+- Change: one goal store for the runner, `data/goals.json` (`session.DATA / "goals.json"`), outside the day folders.
+  - A goal stays until it is removed or a new goal is recorded under its name. `record_goal()` already replaces a goal of the same name.
+  - A new `remove_goal(name)` deletes it from the store. A running episode keeps its own copy of its goal.
+  - `use_goal()` prints the goal's recorded time, so an old goal shows as old. No refusal by age: whether a goal from an earlier machine state still applies is the operator's call.
+  - Episode logs stay in the day folders. Each episode's first line already records the goal it used (`goal_record`), so the store needn't keep a history.
+  - `data/goals.json` is copied back with the day folders.
+- Where: `advise.record_goal()` and `use_goal()` (`advise.py:77-118`), the module docstring (`advise.py:3`), and the two tests that read the goal file by its day path (`tests/test_advise.py:63`, `:245`).
+- Done when offline tests show that a goal recorded on one date is used on the next (date patched), that recording under an existing name replaces it, and that `use_goal()` after `remove_goal()` is refused with the list of goals.
+
 **Not to change** (training depends on these):
 - One write per proposal, at most one session step (0.25° / 0.3° × the step setting, R14).
 - The bookkeeping in 3.5: declines as 0/0, the change as written, the 0.02° L2 dead zone, holds without an advance, the episode restart, and goals as the mean of 3 readings with no write between.
@@ -273,6 +284,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
    - Readings are valid at the chosen capture length (R6).
    - A start that fails the crop-edge check (edge fraction ≥ 0.01): lower the TCAV voltage, or the spacing, before arming. In training, about 10% of hidden states (28–32 MV with spacing above about 300 µm) put the image at the crop edge wherever L1 / L2 start.
 4. **`record_goal()`** for each goal, inside the envelope (R5).
+   - Goals stay across days until removed or replaced (R15). `remove_goal()` the ones that no longer apply.
 5. **`arm(name, budget)`** with the budget inside the envelope (R2).
    - Detune moves count against it. Keep them to at most half the budget, as training assumed.
 6. **`use_goal()`, then approved cycles.**
