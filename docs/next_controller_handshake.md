@@ -47,8 +47,9 @@ Each line is something the policy was trained for. Outside these ranges its beha
 | Bunch order | Witness trails the drive, so spacing is positive | spacing goals 100–400 µm, starts readable and ≥ 100 µm | goal check (R5); negative reading (R4) | Ryan 11-25 |
 | Drive σz goal | A recorded reading | the training goal distribution (the exporter writes the range) | goal check (R5) | – |
 | TCAV | Phased and calibrated by ops at the session's optics. Calibration error within ±10% | 18–32 MV | checklist | Ryan 11-25 |
-| Sector-20 optics | FF quads Q5FF, Q4FF, Q3FF, Q2FF, Q0FF within ±15% of design, Q1FF within ±5% (provisional, see §6); BC20 sextupoles within ±35% of the 04-15 readbacks; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
+| Sector-20 optics | FF quads Q5FF, Q4FF, Q3FF, Q2FF, Q0FF within ±15% of design, Q1FF within ±5% (Ryan 11-25 evening: at ±15% the simulated bunch split fails in 33% of readings); BC20 sextupoles within ±35% of the 04-15 readbacks; movers within ±0.75 mm | as stated | checklist (prints BACT against design) | Ryan 11-25; 11-05 readbacks (−17% to +12%) |
 | Injector | Two bunches, total charge 1.6–2.2 nC, delay 7–10 ps, laser pulses 1.5–2.3 ps each | uniform over that span | checklist (ops' numbers) | Ryan 11-25 |
+| Phase drift | Beam-side L1 / L2 phase drift oscillates about a mean (feedbacks hold the cavity phases); white per-step phase wander on top | drift 0.35–1° rms, mean-reverting with τ 5–15 min, plus rare L2 jumps; wander L1 0.10–0.20°, L2 0.15–0.30° per step | – | Ryan 11-25 evening; DAQ hour 0.3–0.4° rms (10-18) |
 | Energy setpoints | Energy feedbacks hold BC14/BC20 within ±4.5 / ±10 MeV per session, about 0.1% step to step | as stated | – | Ryan 11-25 |
 | Image | Extra blur 0.5–1.5× what the image fits needed (about 130 µm on the screen along the streak, 1.8–2.9 px along energy) | as stated | – | Ryan 11-25 |
 
@@ -229,7 +230,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - `tests/test_controller.py::test_inputs_reproduce_the_training_env` must apply the L2 dead zone to the clipped change before `advance()`, as `advise.apply()` does (an L2 change under `MIN_L2_MOVE` is not written, so the observed change is 0). The new policy's exported episodes include such steps; the incumbent's training env had no dead zone, so its test never met one.
 - The exported episodes may end before 40 steps when a reading stays unreadable (the runner would hold there); the test should loop over the actions it has.
 
-**R13. The energy cut from the right polarity. Proposed (found 11-25 in the E331 replays).**
+**R13. The energy cut from the right polarity. Decided (Ryan 11-25 evening): implement it; the E331 replay gate is scored with it, the as-built number reported beside it. Found 11-25 in the E331 replays.**
 - `screen.step_cut` takes the step's energy cut from the camera's "+" frames. On an E331-type session, where the TCAV sign pairing is reversed against E300 (11-03), those are the physically opposite polarity.
 - The TCAV's energy kick changes sign with the polarity, so at large spacing their valley jumps about 18 rows to another dip. That swaps the bunch labels: the far side of the scan reads negative, and a band past the crossing reads positive.
 - Taking the cut from the frames whose streak matches E300's "+" polarity fixes most of it:
@@ -258,6 +259,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 3. **Background, then shadow cycles.**
    - Witness trailing reads positive.
    - Readings are valid at the chosen capture length (R6).
+   - A start that fails the crop-edge check (edge fraction ≥ 0.01): lower the TCAV voltage, or the spacing, before arming. In training, about 10% of hidden states (28–32 MV with spacing above about 300 µm) put the image at the crop edge wherever L1 / L2 start.
 4. **`record_goal()`** for each goal, inside the envelope (R5).
 5. **`arm(name, budget)`** with the budget inside the envelope (R2).
    - Detune moves count against it. Keep them to at most half the budget, as training assumed.
@@ -269,9 +271,6 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 8. **Close:** `end_episode()`; `undo_all()` or keep; `disarm()`; ops restore the feedbacks.
 
 ## 6. Open questions for ops and Ryan
-
-- **R13: is the gate replay "as built" or with the polarity fix?** E331 readings are much better with it on two of five pairs, worse on one.
-- **Q1FF width (provisional ±5%).** With Q1FF at ±15% independently, 33% of the simulated screen readings swap the drive and witness labels (the bunch split fails); ±5% gives 2%. The 11-05 machine state had Q1FF at +3.1%. A pre-shift check on Q1FF within ±5% of design belongs in the envelope checklist if this stays.
 
 - Which loop writes PREQ (the BC11 bunch-length feedback?), and whether turning it back on is bumpless (Zack).
 - 10 Hz for the shift.
