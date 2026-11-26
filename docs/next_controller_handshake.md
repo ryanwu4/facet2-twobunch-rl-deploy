@@ -70,17 +70,17 @@ One change on the training side: the episodes in `episodes.npz` come from the ne
 | Field | Incumbent | New policy |
 |---|---|---|
 | `controls` | `[L1PhaseSet, L2PhaseSet]` | unchanged |
-| `action_step` | `[0.25, 0.3]` | unchanged (≤ `pvs.WRITE` steps) |
+| `action_step` | `[0.25, 0.3]` | unchanged: the 1× step. The session's step is `action_step` × the step setting, 0.3–1.5× (R14) |
 | `actuators` | `[direct_rb, direct]` | `[direct, direct]` |
-| `blocks` | the seven of `controller.BLOCKS` | unchanged names and order |
+| `blocks` | the seven of `controller.BLOCKS` | the seven, then `step_scale` (R14) |
 | `features` | spacing, σz, `screen_valid_deployed`, `drive_charge_fraction`, the two goals (6) | spacing, σz, the two goals (4). The charge fraction is dropped (real light share 0.46–0.69 between runs and dependent on the streak sign; Ryan 11-25). The valid flag is dropped: it is always 1 at the runner and now in training too |
 | `goals` | spacing (identity, scale 1e-5 m); σz (log10, scale 0.0414) | unchanged |
 | `history` | 16 | unchanged |
 | `episode_length` | 128 | unchanged |
-| `inputs` | 106 | 104 |
+| `inputs` | 106 | 106 (104 + the step setting) |
 | `envelope` | – | new, see 3.4 |
 
-### 3.3 Input vector (104)
+### 3.3 Input vector (106)
 
 | Block | Size | Content |
 |---|---|---|
@@ -91,6 +91,7 @@ One change on the training side: the episodes in `episodes.npz` come from the ne
 | `last_action` | 2 | the policy's last output; 0 at the start and after a decline |
 | `gain_estimate` | 2 | 0 |
 | `history` | 90 | 15 × [goal error before the step, the action before the one applied, the step's observed change], oldest first, zeros before the episode began (training's pairing, kept) |
+| `step_scale` | 2 | the session's step setting per control, as a fraction of `action_step` (1 by default; R14) |
 
 Normalisation is (x − obs_mean) / √(obs_var + 1e-5), with no clipping. The features block is read from the manifest's list (`controller.Episode._features`). `advise.values()` may return keys the policy doesn't use; they are ignored. So the smaller block needs no code change. That should be confirmed by the new policy's tests (R12).
 
@@ -103,6 +104,7 @@ The exporter writes the ranges the policy was trained on:
   "step_period_s": [20, 45],
   "kept_frames_per_polarity": [15, 35],
   "budget_deg": {"L1PhaseSet": [1.0, 3.0], "L2PhaseSet": [1.5, 4.0]},
+  "step_scale": {"L1PhaseSet": [0.3, 1.5], "L2PhaseSet": [0.3, 1.5]},
   "spacing_goal_m": [1.0e-4, 4.0e-4],
   "drive_sigma_z_goal_m": ["from the training goal distribution, 5-95 %"],
   "tcav_MV": [18, 32],
@@ -244,8 +246,18 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - Change: `step()` / `read_step()` take a `cut_polarity` ("+" or "−", default "+"). The console checklist sets it per session from the session's TCAV sign pairing, the same check that fixes the streak sign.
 - Done when an offline test on an E331 pair reproduces the replay's `_cutminus` readings.
 
+**R14. The step as a session setting. Decided (Ryan 11-25 evening).**
+- Why: if the first proposals on the machine overshoot (for example an L2 gain off from training's), the operator can shrink the step for the session without retraining. The policy is trained with it: each episode's step setting is drawn (half at 1×, half log-uniform over 0.3–1.5×, per control) and is its last input, so a smaller step is in its training range and it takes more steps.
+- Change (`controller.Episode(..., step_scale=...)` and the input block are done, `dd47aa1`):
+  - `actuate.arm(name, budget=None, step_scale=None)` takes a per-kind setting inside the envelope's `step_scale` range, default 1, recorded in the ledger's first line beside the budget.
+  - `advise.propose()` builds the episode with the armed setting and clips with `episode.step` (= `action_step` × the setting) in place of `action_step`.
+  - The hard per-write limit in `actuate` becomes the session's step: up to 1.5 × `pvs.WRITE` (0.375° on L1, 0.45° on L2). **This raises a safety limit; tell ops.** Above 1× needs Ryan's go on the day.
+  - A policy without the `step_scale` block (the incumbent) refuses a setting other than 1.
+- Checklist: arm at 1×. Lower it if the first proposals overshoot (the spacing passes the goal and comes back). Under drift keep it at 0.5× or more: at 0.3× the L2 step can't keep up with the drift in about 9% of 4-step windows, mostly the rare L2 jumps (`results/rl_newframe/diag_step_drift.py` in twobunch-s2e-rl). The 0.02° L2 dead zone is unchanged, so at 0.3× moves under 22% of a full step aren't written.
+- Done when offline tests cover a non-default setting: the clip, the ledger line, the write limit and the inputs.
+
 **Not to change** (training depends on these):
-- One write per proposal, at most one action step (0.25° / 0.3°).
+- One write per proposal, at most one session step (0.25° / 0.3° × the step setting, R14).
 - The bookkeeping in 3.5: declines as 0/0, the change as written, the 0.02° L2 dead zone, holds without an advance, the episode restart, and goals as the mean of 3 readings with no write between.
 - The normalisation formula and the clip formula.
 - `tests/test_read_only.py`.
