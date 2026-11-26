@@ -13,7 +13,9 @@ The inputs, in the manifest's order (106 for the incumbent):
 - last action: the policy's last output (0 at the start, and after a declined proposal);
 - gain estimate: 0 (only an adapter actuator, which this module refuses, fills it);
 - history: the last (history - 1) steps, oldest first, zeros before the episode began. Each step adds (goal error before
-  the step, the action before the one applied, the step's observed change): training's pairing, kept.
+  the step, the action before the one applied, the step's observed change): training's pairing, kept;
+- step scale (policies trained with a session step setting): each control's step as a fraction of the manifest's
+  action_step, as armed for the session (1 by default).
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import numpy as np
 
 POLICIES = Path(__file__).resolve().parents[1] / "policies"
 BLOCKS = ["cumulative_change", "features", "goal_error", "error_trend", "last_action", "gain_estimate", "history"]
+STEP_SCALE = "step_scale"           # an optional last block
 READING = ("bunch_spacing", "drive_sigma_z", "drive_charge_fraction", "screen_valid_deployed")
 
 
@@ -40,7 +43,8 @@ class Policy:
         with np.load(POLICIES / name / "weights.npz") as w:
             self.arrays = {k: w[k].astype(float) for k in w.files}
         m = self.manifest
-        if [b["name"] for b in m["blocks"]] != BLOCKS or set(m["actuators"]) - {"direct", "direct_rb"}:
+        names = [b["name"] for b in m["blocks"]]
+        if names not in (BLOCKS, BLOCKS + [STEP_SCALE]) or set(m["actuators"]) - {"direct", "direct_rb"}:
             raise ValueError(f"{name}: inputs or actuators this module doesn't build")
 
     def act(self, inputs: np.ndarray) -> np.ndarray:
@@ -68,12 +72,18 @@ def clip(action: np.ndarray, step: list, net: np.ndarray, budget: np.ndarray) ->
 
 
 class Episode:
-    """One episode's inputs: from `goal` and the reading it starts on, then one advance() per step."""
+    """One episode's inputs: from `goal` and the reading it starts on, then one advance() per step. `step_scale`: the
+    session's step per control as a fraction of action_step (a policy with the step_scale block; default 1)."""
 
-    def __init__(self, policy: Policy, goal: dict, reading: dict):
+    def __init__(self, policy: Policy, goal: dict, reading: dict, step_scale=None):
         m = policy.manifest
         self.policy, self.goal, self.steps = policy, dict(goal), 0
         n, frame = len(m["controls"]), len(m["goals"]) + 2 * len(m["controls"])
+        self.scaled = m["blocks"][-1]["name"] == STEP_SCALE
+        if step_scale is not None and not self.scaled:
+            raise ValueError(f"{policy.name} was not trained with a step setting")
+        self.step_scale = np.ones(n) if step_scale is None else np.asarray(step_scale, float)
+        self.step = np.asarray(m["action_step"], float) * self.step_scale     # the session's step (deg)
         self.change, self.action = np.zeros(n), np.zeros(n)
         self.error = self.error_before = self._error(reading)
         self.features = self._features(reading)
@@ -89,8 +99,9 @@ class Episode:
                          for f in self.policy.manifest["features"]])
 
     def inputs(self) -> np.ndarray:
-        return np.concatenate([self.change, self.features, self.error, self.error - self.error_before, self.action,
-                               np.zeros_like(self.action), self.history.ravel()])
+        parts = [self.change, self.features, self.error, self.error - self.error_before, self.action,
+                 np.zeros_like(self.action), self.history.ravel()]
+        return np.concatenate(parts + ([self.step_scale] if self.scaled else []))
 
     def advance(self, action: np.ndarray, change: np.ndarray, reading: dict) -> None:
         """The step's action (the policy's output, or 0 if declined), the change it made (deg, after clipping) and the
