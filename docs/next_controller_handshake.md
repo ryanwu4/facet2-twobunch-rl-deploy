@@ -251,7 +251,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - Change (`controller.Episode(..., step_scale=...)` and the input block are done, `dd47aa1`):
   - `actuate.arm(name, budget=None, step_scale=None)` takes a per-kind setting inside the envelope's `step_scale` range, default 1, recorded in the ledger's first line beside the budget.
   - `advise.propose()` builds the episode with the armed setting and clips with `episode.step` (= `action_step` × the setting) in place of `action_step`.
-  - The hard per-write limit in `actuate` becomes the session's step: up to 1.5 × `pvs.WRITE` (0.375° on L1, 0.45° on L2). **This raises a safety limit; tell ops.** Above 1× needs Ryan's go on the day.
+  - **Note, open (Ryan decides with this work):** the hard per-write limit in `actuate` is one 1× step (`pvs.WRITE`: 0.25° on L1, 0.3° on L2). A setting above 1× needs that limit to follow the session's step, up to 1.5× (0.375° / 0.45°), which raises a safety limit ops should know about. Settings up to 1× need no change to it.
   - A policy without the `step_scale` block (the incumbent) refuses a setting other than 1.
 - Checklist: arm at 1×. Lower it if the first proposals overshoot (the spacing passes the goal and comes back). Under drift keep it at 0.5× or more: at 0.3× the L2 step can't keep up with the drift in about 9% of 4-step windows, mostly the rare L2 jumps (`results/rl_newframe/diag_step_drift.py` in twobunch-s2e-rl). The 0.02° L2 dead zone is unchanged, so at 0.3× moves under 22% of a full step aren't written.
 - Done when offline tests cover a non-default setting: the clip, the ledger line, the write limit and the inputs.
