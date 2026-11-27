@@ -6,8 +6,9 @@ back (from_srv01.sh: the day's _V2 folder and its _S5 step folder); not on the h
 One row per event of the day's episode logs, in time order:
 - proposal: the reading (spacing, sigma_z), the goal, the policy's action, the change asked and clipped, the decision
   and what was applied, the net move, budget and step, the period since the last advance, the ledger writes that
-  applied it, and from the step record of its reading: validity, the reading, frames kept per polarity, and the median
-  of every phase and bunch-length PV over the capture;
+  applied it, and from the step record of its reading: validity, the reading, frames kept per polarity, the median
+  of every phase and bunch-length PV over the capture, and each polarity's median drive-witness offset on the screen
+  in the first and second halves of the capture (R7: whether the beam was still settling after a write);
 - hold: the failed checks and whether they were beam-state ones, with the step record's fields;
 - the episode's start, goal changes, restarts, alerts, and each run's start and stop with its reason.
 """
@@ -17,6 +18,8 @@ import argparse
 import csv
 import json
 from pathlib import Path
+
+import numpy as np
 
 CONTROLS = ("L1", "L2")
 
@@ -37,6 +40,24 @@ def step_fields(path: Path) -> dict:
     out.update({f"read_{k}": v for k, v in (r["reading"] or {}).items()})
     for kind in ("phases", "drift"):
         out.update({f"median {name}": s.get("median") for name, s in r[kind].items()})
+    out.update(halves(r.get("per_frame")))
+    return out
+
+
+def halves(per_frame: dict | None) -> dict:
+    """R7: each polarity's median drive-witness offset x_d - x_w (um on the screen) over the kept frames of the first
+    and of the second half of the capture (split at its middle in time); None where a half has none of a polarity."""
+    if not per_frame or not per_frame["timestamp"]:
+        return {}
+    t = np.asarray(per_frame["timestamp"])
+    middle = (t[0] + t[-1]) / 2
+    out = {}
+    for sign, label in (("+", "plus"), ("-", "minus")):
+        for half, inside in (("first", t < middle), ("second", t >= middle)):
+            offsets = [1e6 * (s["x_d"] - s["x_w"]) for s, tag, drop, i in
+                       zip(per_frame["band_stats"], per_frame["tag"], per_frame["drop"], inside)
+                       if tag == sign and not drop and s and i]
+            out[f"offset_{label}_{half}_um"] = float(np.median(offsets)) if offsets else None
     return out
 
 
