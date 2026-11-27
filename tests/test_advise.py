@@ -401,10 +401,15 @@ def test_run_with_a_goal_schedule(armed, monkeypatch):     # noqa: F811
 
 @needs_daq
 def test_run_stops_on_a_hold_and_reports_the_schedule_left(armed, monkeypatch, capsys):     # noqa: F811
-    start(monkeypatch, fake(), fake(valid=False, failed="+ frames >= 15"))
+    """A hold stops the run and the schedule; what is left of it is printed. A goal switch asked for but not yet made
+    (the hold came first) is dropped, so later approved cycles keep the episode's goal."""
+    start(monkeypatch, fake(), fake(valid=False, failed="+ frames >= 15"), fake(valid=False, failed="+ frames >= 15"))
     assert advise.run(None, 1100.0, schedule=[("A", 3)]) == "a hold"
     assert "schedule left: [('A', 2)]" in capsys.readouterr().out
-    assert "next_goal" not in advise._episode
+    advise._save_goals({**advise._goals(), "B": {**advise._goals()["A"], "bunch_spacing": 170e-6}})
+    assert advise.run(None, 1100.0, schedule=[("B", 2)]) == "a hold"
+    assert "schedule left: [('B', 2)]" in capsys.readouterr().out
+    assert "next_goal" not in advise._episode and advise.state()["episode"] == "A"
 
 
 @needs_daq
