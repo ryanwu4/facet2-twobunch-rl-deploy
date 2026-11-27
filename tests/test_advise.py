@@ -60,7 +60,23 @@ def test_goal_is_the_mean_of_three_valid_readings(monkeypatch):
     goal = advise.record_goal("A")
     assert goal["bunch_spacing"] == pytest.approx(152e-6) and goal["drive_sigma_z"] == pytest.approx(42e-6)
     assert goal["readings"] == [r["reading"].path for r in advise._readings if r["values"]]
-    assert json.loads((advise._day() / "goals.json").read_text()) == {"A": goal}
+    assert json.loads((session.DATA / "goals.json").read_text()) == {"A": goal}
+
+
+def test_goals_kept_until_removed_or_replaced(monkeypatch, tmp_path):
+    """The goal store outlives the day: a goal recorded today is used tomorrow (its episode log in tomorrow's folder);
+    recording under its name replaces it; once removed, use_goal() refuses with the goals left."""
+    goal = start(monkeypatch, fake(160.0))
+    monkeypatch.setattr(advise, "_day", lambda: tmp_path)                   # the next day's folder
+    advise.step(None, 1100.0)
+    advise.use_goal("A")
+    assert advise._episode["goal"] == goal and advise._episode["log"].parent == tmp_path
+    replaced = advise.record_goal("A")                                       # the last three: 152, 154, 160 um
+    assert replaced["bunch_spacing"] == pytest.approx(155.333e-6, abs=1e-9) and list(advise._goals()) == ["A"]
+    advise.remove_goal("A")
+    assert advise._episode["goal"] == goal                                   # the running episode keeps its copy
+    with pytest.raises(RuntimeError, match="no goal 'A' \\(goals: \\[\\]\\)"):
+        advise.use_goal("A")
 
 
 def test_goal_refused_with_a_write_between(monkeypatch):
@@ -262,7 +278,7 @@ def test_propose_from_a_real_step(replay, monkeypatch):
     values = advise._readings[-1]["values"]
     assert values["bunch_spacing"] == pytest.approx(1e-6 * reading.record["reading"]["spacing_um"])
     goal = {"bunch_spacing": values["bunch_spacing"] + 10e-6, "drive_sigma_z": values["drive_sigma_z"]}
-    (advise._day() / "goals.json").write_text(json.dumps({"A": goal}))
+    (session.DATA / "goals.json").write_text(json.dumps({"A": {"time": "now", **goal}}))
     advise.use_goal("A")
     p = advise.propose()
     expected = advise.policy().act(controller.Episode(advise.policy(), goal, values).inputs())

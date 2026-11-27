@@ -1,12 +1,13 @@
 """P1b (v2): the policy's goals, episodes and proposals, and the approved cycle. Writes only through actuate's moves, so
 arm(), the limits, the budget and the ledger apply as in W1. Each episode's proposals and decisions go in its log,
-data/<date>_V2/episode_<HHMMSS_mmm>.jsonl; goals in data/<date>_V2/goals.json.
+data/<date>_V2/episode_<HHMMSS_mmm>.jsonl. Goals are kept in data/goals.json until removed or replaced (R15).
 
 A session (v2 plan, 11-06):
   step(background, streak)      readings, as session.step(), remembered here with the writes sent around them
   record_goal("A")              the mean of the last GOAL_READINGS valid readings, with no write between them
   actuate.arm("name"), actuate.move_l1() / move_l2()   detune, inside the budget
   use_goal("A")                 an episode on the latest reading, with no history, as training's reset
+  remove_goal("A")              a goal that no longer applies
   cycle(background, streak)     step(), propose(), and when armed a y/N prompt: y applies, anything else declines
   end_episode(); actuate.undo_all() or keep; actuate.disarm()
 
@@ -75,8 +76,9 @@ def values(reading: session.Reading) -> dict | None:
 
 
 def record_goal(name: str) -> dict:
-    """Goal `name`: the mean of each goal feature over the last GOAL_READINGS valid readings, saved to today's
-    goals.json. Refused if there are fewer, or if a write was sent between the first and the last."""
+    """Goal `name`: the mean of each goal feature over the last GOAL_READINGS valid readings, saved in the goal store
+    (replacing a goal of that name). Refused if there are fewer, or if a write was sent between the first and the
+    last."""
     valid = [r for r in _readings if r["values"] is not None][-GOAL_READINGS:]
     if len(valid) < GOAL_READINGS:
         raise RuntimeError(f"{len(valid)} valid readings so far; a goal needs {GOAL_READINGS}")
@@ -85,21 +87,28 @@ def record_goal(name: str) -> dict:
     goal = {"time": datetime.datetime.now().isoformat(timespec="seconds"),
             "readings": [r["reading"].path for r in valid],
             **{g["key"]: float(np.mean([r["values"][g["key"]] for r in valid])) for g in policy().manifest["goals"]}}
-    path = _day() / "goals.json"
-    goals = json.loads(path.read_text()) if path.exists() else {}
-    path.write_text(json.dumps({**goals, name: goal}, indent=1) + "\n")
+    _save_goals({**_goals(), name: goal})
     return goal
 
 
-def use_goal(name: str) -> dict:
-    """Start an episode on goal `name` (today's goals.json) from the latest reading, which must be valid and taken with
-    no write since: the policy's inputs with no history, as training's reset. Manual moves are refused until
-    end_episode(); a running episode ends first. Returns the episode log's first line."""
-    global _episode, _proposal
-    path = _day() / "goals.json"
-    goals = json.loads(path.read_text()) if path.exists() else {}
+def remove_goal(name: str) -> None:
+    """Remove goal `name` from the store. A running episode keeps its own copy."""
+    goals = _goals()
     if name not in goals:
-        raise RuntimeError(f"no goal {name!r} today (goals: {sorted(goals)}): record_goal() first")
+        raise RuntimeError(f"no goal {name!r} (goals: {sorted(goals)})")
+    del goals[name]
+    _save_goals(goals)
+
+
+def use_goal(name: str) -> dict:
+    """Start an episode on goal `name` (from the goal store) from the latest reading, which must be valid and taken
+    with no write since: the policy's inputs with no history, as training's reset. Prints when the goal was recorded:
+    whether an old goal still applies is the operator's call. Manual moves are refused until end_episode(); a running
+    episode ends first. Returns the episode log's first line."""
+    global _episode, _proposal
+    goals = _goals()
+    if name not in goals:
+        raise RuntimeError(f"no goal {name!r} (goals: {sorted(goals)}): record_goal() first")
     goal = goals[name]
     latest = _latest()
     if latest["values"] is None:
@@ -112,6 +121,8 @@ def use_goal(name: str) -> dict:
                 "log": _day() / f"episode_{now:%H%M%S}_{now.microsecond // 1000:03d}.jsonl"}
     _proposal = None
     actuate.episode = name
+    print(f"goal {name}, recorded {goal['time']}: spacing {1e6 * goal['bunch_spacing']:.1f} um, "
+          f"drive sigma_z {1e6 * goal['drive_sigma_z']:.1f} um")
     files = [controller.POLICIES / POLICY / f for f in ("policy.json", "weights.npz")]
     return _log({"goal": name, "goal_record": goal, "step_scale": scale, "policy": POLICY,
                  "policy_sha256": hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest(),
@@ -269,6 +280,16 @@ def _latest() -> dict:
     if _readings[-1]["writes"][0] != actuate.writes:
         raise RuntimeError("a write was sent during or after the latest reading: step() again")
     return _readings[-1]
+
+
+def _goals() -> dict:
+    path = session.DATA / "goals.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _save_goals(goals: dict) -> None:
+    session.DATA.mkdir(parents=True, exist_ok=True)
+    (session.DATA / "goals.json").write_text(json.dumps(goals, indent=1) + "\n")
 
 
 def _day() -> Path:
