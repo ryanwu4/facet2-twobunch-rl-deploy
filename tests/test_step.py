@@ -348,17 +348,18 @@ def test_step(replay, tmp_path, monkeypatch):
     assert 0.0 in constants.values()                              # LI11:SBST:1:PDES, 0 in the DAQ
     for name, value in constants.items():                         # S6, S7: one update each, on subscribing
         assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value,
-                                            "zeros": int(value == 0), "nans": 0}
+                                            "zeros": int(value == 0), "nans": 0, "sentinels": 0}
     for name in next(iter(per_shot.values())):                    # one per frame with a shot
         values = [per_shot[p][name] for p in frame_ids if p in per_shot]
         finite = [v for v in values if np.isfinite(v)]
         kind = "drift" if name in pvs.BLEN else "phases"
         assert r.record[kind][name] == {"updates": len(values), "median": np.median(finite),
                                         "first": acquire.number(values[0]), "last": acquire.number(values[-1]),
-                                        "zeros": values.count(0), "nans": len(values) - len(finite)}
+                                        "zeros": values.count(0), "nans": len(values) - len(finite),
+                                        "sentinels": 0}
     for name, value in DRIFT_STAND_IN.items():                   # S8: one update each, on subscribing
         assert r.record["drift"][name] == {"updates": 1, "median": value, "first": value, "last": value, "zeros": 0,
-                                           "nans": 0}
+                                           "nans": 0, "sentinels": 0}
     assert r.record["magnets"] == magnet_values()
     assert len(frames["timestamp"]) == len(frame_ids) and np.all(np.diff(frames["timestamp"]) > 0)
     np.testing.assert_equal(json.loads(Path(r.path).read_text()), json.loads(json.dumps(r.record)))

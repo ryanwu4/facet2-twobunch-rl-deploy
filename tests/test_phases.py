@@ -22,15 +22,18 @@ def test_summarise():
     updates = [machine.Update(a, 0, 1.0, -23.0), machine.Update(b, 0, 1.0, -20.0), machine.Update(a, 36, 1.1, 0.0),
                machine.Update(a, 72, 1.2, -23.5), machine.Update(a, 108, 1.3, -23.25)]
     assert acquire.summarise(updates, a) == {"updates": 4, "median": -23.125, "first": -23.0, "last": -23.25,
-                                             "zeros": 1, "nans": 0}
+                                             "zeros": 1, "nans": 0, "sentinels": 0}
     assert acquire.summarise(updates, b) == {"updates": 1, "median": -20.0, "first": -20.0, "last": -20.0, "zeros": 0,
-                                             "nans": 0}
+                                             "nans": 0, "sentinels": 0}
     nan = [machine.Update(a, 0, 1.0, np.nan), machine.Update(a, 36, 1.1, -23.0), machine.Update(a, 72, 1.2, np.nan)]
     assert acquire.summarise(nan, a) == {"updates": 3, "median": -23.0, "first": None, "last": None, "zeros": 0,
-                                         "nans": 2}
+                                         "nans": 2, "sentinels": 0}
     assert acquire.summarise(nan[:1], a) == {"updates": 1, "median": None, "first": None, "last": None, "zeros": 0,
-                                             "nans": 1}
+                                             "nans": 1, "sentinels": 0}
     assert acquire.summarise(updates, pvs.TCAV_PHASE) == {"updates": 0}
+    phas = [machine.Update(a, 0, 1.0, -48.2), machine.Update(a, 36, 1.1, -10000.0), machine.Update(a, 72, 1.2, -48.4)]
+    assert acquire.summarise(phas, a) == {"updates": 3, "median": -48.3, "first": -48.2, "last": -48.4, "zeros": 0,
+                                          "nans": 0, "sentinels": 1}       # the sentinel kept out of the median
 
 
 @needs_daq

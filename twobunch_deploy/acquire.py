@@ -27,6 +27,7 @@ OFF_DIP = 0.5           # MV: off frames are more than this below the mean ampli
 NEITHER_RUN = 5         # frames: a run of at least this many frames tagged neither ends a polarity window (dropped)
 # monitored with the TCAV readbacks during every capture: the L1 and L2 phase PVs (S6, S7) and the bunch-length and
 # drift PVs (S8)
+SENTINEL = -10000.0     # an SCP readback's "no reading" (the LI12-14 subbooster and LI14 klystron PHAS, 11-05)
 MONITORED = [*pvs.L1, *pvs.L2, *pvs.BLEN, *pvs.DRIFT]
 
 
@@ -67,18 +68,18 @@ def readback(frames: list, updates: list, name: str) -> np.ndarray:
 
 
 def summarise(updates: list, name: str) -> dict:
-    """The updates of the PV `name` during a capture (S6, S7, S8): how many, the median of the finite ones (None if
-    none is), the first (the PV's value when the capture began: a monitor's first update is the current value) and the
-    last (None if NaN), and how many read exactly 0 and how many NaN. A BSA PV reads 0 for a missed shot (TEST_15668's
-    FAST_PACT on 0.6-0.8% of them, which barely move a median), and the DAQ records NaN for a shot without a value (its
-    BLEN:IN10:596 on 57% of them)."""
+    """The updates of the PV `name` during a capture (S6, S7, S8): how many, the median of the finite ones other than
+    the SENTINEL (None if none is), the first (the PV's value when the capture began: a monitor's first update is the
+    current value) and the last (None if NaN), and how many read exactly 0, how many NaN and how many the SENTINEL. A
+    BSA PV reads 0 for a missed shot (TEST_15668's FAST_PACT on 0.6-0.8% of them, which barely move a median), and the
+    DAQ records NaN for a shot without a value (its BLEN:IN10:596 on 57% of them)."""
     values = [u.value for u in updates if u.name == name]
     if not values:
         return {"updates": 0}
-    finite = [v for v in values if np.isfinite(v)]
+    finite = [v for v in values if np.isfinite(v) and v != SENTINEL]
     return {"updates": len(values), "median": float(np.median(finite)) if finite else None,
             "first": number(values[0]), "last": number(values[-1]), "zeros": values.count(0),
-            "nans": len(values) - len(finite)}
+            "nans": int(np.sum(~np.isfinite(values))), "sentinels": values.count(SENTINEL)}
 
 
 def number(value: float) -> float | None:

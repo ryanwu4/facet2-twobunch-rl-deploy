@@ -120,10 +120,11 @@ def capture_test(seconds: float = 30, n_saved: int = 10) -> dict:
     summary = {"seconds": seconds, "frames": len(frames)}
     if frames:
         steps = pulse_id_steps([f.pulse_id for f in frames])
-        expected = sum(s * n for s, n in steps.items()) // PULSE_IDS_PER_FRAME + 1
+        per_frame = max(steps, key=steps.get) if steps else PULSE_IDS_PER_FRAME   # the beam rate's: 36 at 10 Hz
+        expected = sum(s * n for s, n in steps.items()) // per_frame + 1
         latency = [f.received - f.timestamp for f in frames]
         summary.update({
-            "capture_fraction": len(frames) / expected,
+            "capture_fraction": len(frames) / expected, "pulse_ids_per_frame": per_frame,
             "pulse_id_steps": steps,
             "latency_s": {"first": latency[0], "median": float(np.median(latency)), "max": max(latency)},
             "dtype": str(frames[0].data.dtype),
@@ -515,7 +516,8 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
     for sign in ("+", "-"):
         kept = [i for i, (t, d) in enumerate(zip(capture.tags, capture.drop)) if t == sign and not d]
         stats = [read.stats[i] for i in kept if read.stats[i] is not None]
-        polarity[sign] = {"kept": len(stats), "dropped": int(np.sum((capture.tags == sign) & capture.drop))}
+        polarity[sign] = {"frames": len(kept), "kept": len(stats),
+                          "dropped": int(np.sum((capture.tags == sign) & capture.drop))}
         if kept:
             polarity[sign]["intensity"] = float(np.median([read.intensity[i] for i in kept]))
         if stats:

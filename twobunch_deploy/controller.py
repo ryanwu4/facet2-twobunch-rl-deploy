@@ -27,8 +27,8 @@ import numpy as np
 POLICIES = Path(__file__).resolve().parents[1] / "policies"
 BLOCKS = ["cumulative_change", "features", "goal_error", "error_trend", "last_action", "gain_estimate", "history"]
 STEP_SCALE = "step_scale"           # an optional last block
-READING = ("bunch_spacing", "drive_sigma_z", "drive_charge_fraction", "screen_valid_deployed")   # the exporter's columns;
-                                                    # a policy takes the ones its features name
+# the exporter's reading columns; a policy takes the ones its features name
+READING = ("bunch_spacing", "drive_sigma_z", "drive_charge_fraction", "screen_valid_deployed")
 
 
 def transform(value: float, name: str) -> float:
