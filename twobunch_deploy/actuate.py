@@ -181,6 +181,14 @@ def state() -> dict:
             "pending": [e for e in entries if e["state"] == "pending" and e["write"] not in ended]}
 
 
+def last_write() -> dict | None:
+    """This session's last completed write (its ledger entry), or None."""
+    if _session is None:
+        return None
+    done = [e for e in _entries(_session["ledger"]) if e["state"] == "done"]
+    return done[-1] if done else None
+
+
 def attended() -> None:
     """Someone answered a proposal (advise.py): restart the idle timer, as a write does."""
     if _session is not None:
