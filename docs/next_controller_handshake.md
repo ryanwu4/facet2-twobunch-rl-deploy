@@ -1,6 +1,6 @@
 # The next controller: what it assumes, the handshake, and the runner changes
 
-**Written 2026-11-25. Every decision here is Ryan's, from the 11-25 interview and its follow-up; all runner items R1–R12 are decided.**
+**Written 2026-11-25. Every decision here is Ryan's, from the 11-25 interview and its follow-up; all runner items R1–R12 are decided. Updated 2026-11-26 evening (interview): R8's form, R14's write limit, R16 recording, R17 baselines, and the PR order (§4.1).**
 
 **Who this is for.** The agent that will change the runner (this repo), and Ryan when he reviews it. The controller is trained in twobunch-s2e-rl (plan: `docs/next_controller_plan.md` on branch `rl-newframe`). It replaces `nc_zs_screen_noblen_jit_s0` (the incumbent) for the December 3–4 beam time.
 
@@ -194,10 +194,12 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - Measure first, in the first approved-write session: compare the first and second halves of each step after a write. Build the drop above only if they differ. For now, nothing beyond a way to compare the two halves from the saved step records, if that isn't already possible.
 
 **R8. Unattended mode. Decided that closed loop is in scope; the switch is Ryan's judgement on the day.**
-- Change: `cycle(..., unattended=True)` applies the proposal without `input()`.
+- Change (form decided 11-26): `advise.run(background, streak, schedule=None, seconds=...)` loops cycles that apply each proposal without `input()`. It prints and returns why it stopped, and logs the reason in the episode log; the episode stays, in approved mode.
+- **Goal schedule (11-26):** `schedule` is a list of (goal name, n): each goal runs for n proposals (held readings don't count), then the next goal takes over mid-episode as training's goal changes did (history and cumulative change kept; the goal error and its trend restart at the new goal, trend 0). A stop ends the schedule; to go on, pass the rest. Without a schedule the episode's goal is kept.
+- **Interrupt (11-26):** Ctrl-C while a write is in flight (a PREQ put, or the multiknob turn and its setpoint confirmation) is held until that write and its readback check finish, then the run stops. Anywhere else it stops at once. So an interrupt never leaves a write "pending" in the ledger.
 - Each decision is logged as "applied (unattended)".
 - No step cap (Ryan). It runs until one of the stops below, or until the operator stops it.
-- It drops back to approved mode on:
+- It stops (back to approved mode) on:
   - any hold;
   - a failed write;
   - the R3 alert;
@@ -251,7 +253,7 @@ Each item gives what to change, why, where, how it's checked, and its status. St
 - Change (`controller.Episode(..., step_scale=...)` and the input block are done, `dd47aa1`):
   - `actuate.arm(name, budget=None, step_scale=None)` takes a per-kind setting inside the envelope's `step_scale` range, default 1, recorded in the ledger's first line beside the budget.
   - `advise.propose()` builds the episode with the armed setting and clips with `episode.step` (= `action_step` × the setting) in place of `action_step`.
-  - **Note, open (Ryan decides with this work):** the hard per-write limit in `actuate` is one 1× step (`pvs.WRITE`: 0.25° on L1, 0.3° on L2). A setting above 1× needs that limit to follow the session's step, up to 1.5× (0.375° / 0.45°), which raises a safety limit ops should know about. Settings up to 1× need no change to it.
+  - **The per-write limit follows the setting (Ryan 11-26).** The hard limit in `actuate` becomes one session step, `pvs.WRITE` step × the armed setting, up to 1.5× (0.375° on L1, 0.45° on L2). `arm()` refuses a setting outside 0.3–1.5× and records the limit in the ledger's first line. Ops are told the larger limit when a setting above 1× is armed (checklist).
   - A policy without the `step_scale` block (the incumbent) refuses a setting other than 1.
 - Checklist: arm at 1×. Lower it if the first proposals overshoot (the spacing passes the goal and comes back). Under drift keep it at 0.5× or more: at 0.3× the L2 step can't keep up with the drift in about 9% of 4-step windows, mostly the rare L2 jumps (`results/rl_newframe/diag_step_drift.py` in twobunch-s2e-rl). The 0.02° L2 dead zone is unchanged, so at 0.3× moves under 22% of a full step aren't written.
 - Done when offline tests cover a non-default setting: the clip, the ledger line, the write limit and the inputs.
@@ -266,6 +268,23 @@ Each item gives what to change, why, where, how it's checked, and its status. St
   - `data/goals.json` is copied back with the day folders.
 - Where: `advise.record_goal()` and `use_goal()` (`advise.py:77-118`), the module docstring (`advise.py:3`), and the two tests that read the goal file by its day path (`tests/test_advise.py:63`, `:245`).
 - Done when offline tests show that a goal recorded on one date is used on the next (date patched), that recording under an existing name replaces it, and that `use_goal()` after `remove_goal()` is refused with the list of goals.
+
+**R16. Recording for post-run analysis. Decided (Ryan 11-26).**
+- Every step keeps every frame's crop, as now (5–10 MB per 15 s step; about 2–4 GB over two days). Check srv01's free disk before the shift (checklist).
+- **Session record (with R10):** the pre-shift cell saves one JSON per session: the live values beside the policy's envelope (TCAV readback, beam rate, FF quad / sextupole / mover readbacks against design) and what the operator enters (the TCAV calibration and its sign, the cut polarity, ops' charge / delay / pulse lengths, the feedback states, the budget and step setting to arm).
+- **Continuous PV log, optional (off by default, in case it is too big):** a background monitor of the L1 / L2 phase, bunch-length and TCAV PVs over the whole session, including between steps and during holds, one file per hour.
+- **Session table (offline, here, not on the host):** a script that joins the step records, episode logs and ledgers into one table per session: time, reading, goal, proposal, decision, writes, period.
+- No operator-notes call (not chosen).
+
+**R17. Baselines. Later (Ryan 11-26): build after R1–R16; which baselines and the trial protocol are not decided.** Candidates discussed: no action (shadow, no new code), a classical 2×2 step controller through the same path, the incumbent kept selectable, the operator by hand with logging; trials scripted and interleaved, or by hand and tagged.
+
+### 4.1 PRs (Ryan 11-26)
+
+Stacked on #11 (P1b), local branches, Ryan pushes:
+1. The new policy and the session settings: R1, R2, R12, R14, R15.
+2. Holds and readings: R3, R4, R5, R9, R11, R13.
+3. Closed loop and recording: R8, R16, and the checklists R6, R10.
+4. Baselines (R17), once decided.
 
 **Not to change** (training depends on these):
 - One write per proposal, at most one session step (0.25° / 0.3° × the step setting, R14).
