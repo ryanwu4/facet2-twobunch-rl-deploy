@@ -3,6 +3,7 @@ arm(), the limits, the budget and the ledger apply as in W1. Each episode's prop
 data/<date>_V2/episode_<HHMMSS_mmm>.jsonl. Goals are kept in data/goals.json until removed or replaced (R15).
 
 A session (v2 plan, 11-06):
+  pre_shift(entered)            the policy's envelope beside the live values and what the operator enters (R10, R16)
   step(background, streak)      readings, as session.step(), remembered here with the writes sent around them
   record_goal("A")              the mean of the last GOAL_READINGS valid readings, with no write between them
   actuate.arm("name"), actuate.move_l1() / move_l2()   detune, inside the budget
@@ -33,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import actuate, controller, pvs, session
+from . import actuate, controller, machine, pvs, session
 
 POLICY = "nf_screen_full_s0"
 GOAL_READINGS = 3       # record_goal() averages this many valid readings
@@ -63,6 +64,50 @@ def policy() -> controller.Policy:
             raise ValueError(f"{POLICY}: controls {m['controls']} with steps {m['action_step']} don't fit pvs.WRITE")
         _policy = p
     return _policy
+
+
+def pre_shift(entered: dict) -> dict:
+    """R10, R16: the policy's envelope (the ranges it was trained on) beside the live values, for the before-shift
+    checklist, saved as the session's record (data/<date>_V2/session_<HHMMSS>.json) and printed one line per item.
+    Reads once: the TCAV amplitude, each magnet against TEST_15668's value (the 04-15 state the optics draws are about),
+    2 s of camera frames for the beam rate, and the free disk under data/. `entered` is what the operator enters, saved
+    as given; these keys are checked against the envelope when present: charge_nC, delay_ps, budget and step_scale
+    ({"L1": .., "L2": ..}). Other keys (the TCAV calibration and its sign, the cut polarity, ops' pulse lengths, the
+    feedback states) are recorded only. Nothing here refuses: the operator ticks the checklist."""
+    import shutil
+
+    envelope = policy().manifest.get("envelope", {})
+    tcav = machine.describe([pvs.TCAV_AMPLITUDE])[pvs.TCAV_AMPLITUDE]
+    magnets = machine.describe(list(pvs.MAGNETS))
+    steps = session.pulse_id_steps([f.pulse_id for f in machine.frames(2)])
+    rate = session.PULSES_PER_SECOND / max(steps, key=steps.get) if steps else None
+    session.DATA.mkdir(parents=True, exist_ok=True)
+    rows = [("TCAV amplitude, MV", envelope.get("tcav_MV"), None if tcav is None else tcav["value"]),
+            ("beam rate, Hz (capture 15 s at 10 Hz, 30 s at 5 Hz)", None, rate),
+            ("free disk under data/, GB (5-10 MB a step)", None, shutil.disk_usage(session.DATA).free / 1e9)]
+    for name, m in magnets.items():
+        label = pvs.MAGNETS[name].split(" supply")[0]
+        frac = envelope.get("ff_quad_fraction", {}).get(label, envelope.get("sextupole_fraction")
+                                                         if label.startswith("sextupole") else None)
+        ratio = None if m is None else m["value"] / pvs.MAGNETS_IN_DAQ[name]
+        rows.append((f"{label}, x TEST_15668", None if frac is None else [1 - frac, 1 + frac], ratio))
+    for key, span in (("charge_nC", "charge_nC"), ("delay_ps", "delay_ps")):
+        rows.append((f"{key} (entered)", envelope.get(span), entered.get(key)))
+    for key, span in (("budget", "budget_deg"), ("step_scale", "step_scale")):
+        for kind, control in KINDS.items():
+            rows.append((f"{key} {control} (entered)", envelope.get(span, {}).get(kind),
+                         entered.get(key, {}).get(control)))
+    table = [{"item": item, "trained": span, "value": value,
+              "inside": None if span is None or value is None else span[0] <= value <= span[1]}
+             for item, span, value in rows]
+    for row in table:
+        flag = {True: "ok", False: "OUTSIDE", None: ""}[row["inside"]]
+        print(f"{row['item']:<52} {str(row['trained']):<26} {row['value']!s:<24} {flag}")
+    record = {"policy": POLICY, "envelope": envelope, "entered": entered, "table": table,
+              "tcav": tcav, "magnets": magnets, "pulse_id_steps": steps}
+    now = datetime.datetime.now()
+    (_day() / f"session_{now:%H%M%S}.json").write_text(json.dumps(record, indent=1, default=str) + "\n")
+    return record
 
 
 def step(background, streak_um_per_deg: float, seconds: float = 15, cut_polarity: str = "+") -> session.Reading:

@@ -423,3 +423,22 @@ def test_ctrl_c_during_a_write_waits_for_it(armed, monkeypatch):     # noqa: F81
     assert [(e["kind"], e["state"]) for e in entries] == [("L1", "pending"), ("L1", "done"), ("L2", "pending"),
                                                           ("L2", "done")]
     assert advise._proposal["decision"] == "applied (unattended)" and actuate.state()["pending"] == []
+
+
+@needs_daq
+def test_pre_shift_record(replay, capsys):
+    """pre_shift() (R10, R16) on the soft IOC: the magnets read as TEST_15668's (x 1, inside), the beam rate from the
+    frames, entered values checked against the envelope where it has a range and recorded as given."""
+    replay("roi")
+    time.sleep(1.5)                                 # the replay's frames are streaming
+    entered = {"charge_nC": 2.5, "delay_ps": 8.5, "budget": {"L1": 1.0, "L2": 1.5}, "step_scale": {"L1": 1.0, "L2": 2.0},
+               "tcav_calibration_um_per_deg": 1100.0, "cut_polarity": "+"}
+    record = advise.pre_shift(entered)
+    rows = {r["item"]: r for r in record["table"]}
+    assert rows["charge_nC (entered)"]["inside"] is False and rows["delay_ps (entered)"]["inside"] is True
+    assert rows["budget L1 (entered)"]["inside"] is True and rows["step_scale L2 (entered)"]["inside"] is False
+    assert rows["Q5FF, x TEST_15668"]["value"] == pytest.approx(1.0) and rows["Q5FF, x TEST_15668"]["inside"]
+    assert rows["sextupole S1EL, x TEST_15668"]["trained"] == pytest.approx([0.65, 1.35], abs=1e-4)
+    assert rows["beam rate, Hz (capture 15 s at 10 Hz, 30 s at 5 Hz)"]["value"] == 10
+    [saved] = advise._day().glob("session_*.json")
+    assert json.loads(saved.read_text())["entered"] == entered and "OUTSIDE" in capsys.readouterr().out

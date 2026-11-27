@@ -5,12 +5,13 @@ The synthetic tests run everywhere; the session tests on the soft IOC only where
 step()'s record of them is tested in test_step.py.
 """
 import json
+import time
 
 import numpy as np
 import pytest
 
 from conftest import DRIFT_STAND_IN, XTCAV, daq, magnet_values, needs_daq, per_shot_values
-from twobunch_deploy import acquire, pvs, session
+from twobunch_deploy import acquire, machine, pvs, session
 
 
 def test_pvs():
@@ -76,3 +77,23 @@ def test_optics_test(replay, tmp_path, monkeypatch):
         assert abs(s["difference"]) <= 5e-5                       # MAGNETS_IN_DAQ's rounding
     [record] = tmp_path.glob("*_S8/optics_test_*.json")
     assert json.loads(record.read_text()) == json.loads(json.dumps(summary))
+
+
+@needs_daq
+def test_pv_log_beside_a_monitor(replay, tmp_path, monkeypatch):
+    """The optional PV log (R16) runs beside another monitor of the same PVs, as during a step: that monitor gets every
+    shot as without the log, the log has them too, and it starts a new file every file_s."""
+    monkeypatch.setattr(session, "DATA", tmp_path)
+    name = list(pvs.BLEN)[1]                         # BC11's
+    replay("roi")                                   # 2 s, then 29 more frames at 10 Hz
+    session.start_pv_log([name, pvs.TCAV_AMPLITUDE], file_s=2.0)
+    with machine.updates([name]) as during:
+        time.sleep(6)
+    session.stop_pv_log()
+    files = sorted(tmp_path.glob("*_V2/pvlog_*.npz"))
+    logged = set()
+    for f in files:
+        z = np.load(f)
+        logged |= {int(p) for n, p in zip(z["name"], z["pulse_id"]) if n == name}
+    assert len(files) >= 2 and len(during) == 30                    # one per frame, as test_drift_test
+    assert {u.pulse_id for u in during[1:]} <= logged
