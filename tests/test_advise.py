@@ -162,7 +162,8 @@ def test_goal_outside_training_is_recorded_with_a_warning(monkeypatch, capsys):
 
 
 def test_period_is_logged_and_flagged(monkeypatch, capsys):
-    """Each proposal logs the time since the reading the episode last advanced on, flagged over the trained 45 s (R9)."""
+    """Each proposal logs the time since the reading the episode last advanced on, flagged over the trained 45 s
+    (R9)."""
     start(monkeypatch, fake())
     first = advise.propose()
     advise.step(None, 1100.0)
@@ -392,7 +393,8 @@ def test_run_with_a_goal_schedule(armed, monkeypatch):     # noqa: F811
     reference.advance(action, change, advise._readings[7]["values"])
     reference.advance(action, change, advise._readings[8]["values"])
     reference.set_goal(advise._goals()["B"], advise._readings[8]["values"])
-    third = [json.loads(line) for line in advise._episode["log"].read_text().splitlines() if '"proposal": 3,' in line][0]
+    log = advise._episode["log"].read_text().splitlines()
+    third = [json.loads(line) for line in log if '"proposal": 3,' in line][0]
     np.testing.assert_allclose(third["inputs"], reference.inputs(), atol=1e-12)
     assert advise.state()["episode"] == "B" == actuate.episode and advise._episode["n"] == 4
 
@@ -431,8 +433,8 @@ def test_pre_shift_record(replay, capsys):
     frames, entered values checked against the envelope where it has a range and recorded as given."""
     replay("roi")
     time.sleep(1.5)                                 # the replay's frames are streaming
-    entered = {"charge_nC": 2.5, "delay_ps": 8.5, "budget": {"L1": 1.0, "L2": 1.5}, "step_scale": {"L1": 1.0, "L2": 2.0},
-               "tcav_calibration_um_per_deg": 1100.0, "cut_polarity": "+"}
+    entered = {"charge_nC": 2.5, "delay_ps": 8.5, "budget": {"L1": 1.0, "L2": 1.5},
+               "step_scale": {"L1": 1.0, "L2": 2.0}, "tcav_calibration_um_per_deg": 1100.0, "cut_polarity": "+"}
     record = advise.pre_shift(entered)
     rows = {r["item"]: r for r in record["table"]}
     assert rows["charge_nC (entered)"]["inside"] is False and rows["delay_ps (entered)"]["inside"] is True
