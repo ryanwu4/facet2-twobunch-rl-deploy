@@ -114,6 +114,13 @@ class Episode:
         self.action = np.asarray(action, float)
         self.steps += 1
 
+    def set_goal(self, goal: dict, reading: dict) -> None:
+        """A new goal mid-episode, as training's goal changes: the history, cumulative change and last action are kept;
+        the goal error at `reading` is against the new goal, its trend 0."""
+        self.goal = dict(goal)
+        self.error = self.error_before = self._error(reading)
+        self.features = self._features(reading)
+
     @property
     def over(self) -> bool:
         return self.steps >= self.policy.manifest["episode_length"]

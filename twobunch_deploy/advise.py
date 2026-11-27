@@ -9,6 +9,7 @@ A session (v2 plan, 11-06):
   use_goal("A")                 an episode on the latest reading, with no history, as training's reset
   remove_goal("A")              a goal that no longer applies
   cycle(background, streak)     step(), propose(), and when armed a y/N prompt: y applies, anything else declines
+  run(background, streak, schedule)   closed loop (R8): cycles applied without asking until a stop
   end_episode(); actuate.undo_all() or keep; actuate.disarm()
 
 Unarmed, cycle() is shadow mode: proposals are logged and nothing is written. The policy's inputs follow training's
@@ -181,6 +182,13 @@ def propose() -> dict | None:
             e["inputs"] = controller.Episode(policy(), e["goal"], latest["values"], scale)
             print(f"episode at {policy().manifest['episode_length']} steps: restarted on goal {e['name']}")
             _log({"restarted": True, "reading": latest["reading"].path})
+    if e.get("next_goal"):                  # a schedule's next goal (run()), after the step's advance as in training
+        name = e.pop("next_goal")
+        e["name"], e["goal"] = name, _goals()[name]
+        e["inputs"].set_goal(e["goal"], latest["values"])
+        actuate.episode = name
+        _log({"goal_change": name, "goal_record": e["goal"]})
+        print(f"goal now {name}")
     armed, net, budget, scale = _limits()
     if armed and not np.allclose(scale or [1.0, 1.0], e["inputs"].step_scale):
         raise RuntimeError(f"the episode runs at step setting {e['inputs'].step_scale.tolist()}, the session is "
@@ -199,10 +207,10 @@ def propose() -> dict | None:
     return _proposal
 
 
-def apply() -> dict:
+def apply(unattended: bool = False) -> dict:
     """Write the latest proposal, once: L1 (unless its change is 0), then L2 (unless under MIN_L2_MOVE). Refused if it
     has been decided, expired (EXPIRE_S) or a newer reading taken, or if not armed. A failed write ends the episode
-    (actuate disarms)."""
+    (actuate disarms). Ctrl-C meanwhile waits until the writes are made, checked and the decision recorded (R8)."""
     p = _undecided()
     if not actuate.state()["armed"]:
         raise RuntimeError("not armed: the proposal stays undecided (shadow)")
@@ -210,18 +218,20 @@ def apply() -> dict:
         _decide(p, "expired", np.zeros(2))
         raise RuntimeError(f"proposal {p['proposal']} expired ({EXPIRE_S:.0f} s): not applied")
     got = np.zeros(2)
-    try:
-        if p["change"][0] != 0:
-            actuate.move_l1(p["change"][0], proposal=p["proposal"])
-            got[0] = p["change"][0]
-        if abs(p["change"][1]) >= MIN_L2_MOVE:
-            actuate.move_l2(p["change"][1], proposal=p["proposal"])
-            got[1] = p["change"][1]
-    except Exception:
-        _decide(p, "failed", got)
-        end_episode()
-        raise
-    return _decide(p, "applied", got)
+    with actuate.held_interrupt():
+        try:
+            if p["change"][0] != 0:
+                actuate.move_l1(p["change"][0], proposal=p["proposal"])
+                got[0] = p["change"][0]
+            if abs(p["change"][1]) >= MIN_L2_MOVE:
+                actuate.move_l2(p["change"][1], proposal=p["proposal"])
+                got[1] = p["change"][1]
+        except Exception:
+            _decide(p, "failed", got)
+            end_episode()
+            raise
+        _decide(p, "applied (unattended)" if unattended else "applied", got)
+    return p
 
 
 def decline() -> dict:
@@ -242,6 +252,54 @@ def cycle(background, streak_um_per_deg: float, seconds: float = 15, cut_polarit
         print(f"answered after {EXPIRE_S:.0f} s: proposal {p['proposal']} expired, not applied")
         return _decide(p, "expired", np.zeros(2))
     return apply() if answer == "y" else decline()
+
+
+def run(background, streak_um_per_deg: float, schedule: list | None = None, seconds: float = 15,
+        cut_polarity: str = "+") -> str:
+    """Closed loop (R8): cycles (step(), propose(), apply()) without asking, until a stop: a hold (the R3 alert among
+    them), a failed write, a proposal clipped to 0 on both controls (the budget used up), the end of the schedule, or
+    Ctrl-C (a write in flight finishes first). Needs the running episode and an armed session. `schedule`: [(goal name,
+    n), ...]: each goal for n applied proposals, then the next takes over mid-episode as training's goal changes did
+    (history kept, the goal error restarting at the new goal); without one the episode's goal is kept. A stop ends the
+    schedule; to go on, pass the rest. Prints and returns why it stopped, and logs it; the episode stays, approved."""
+    e = _running()
+    if not actuate.state()["armed"]:
+        raise RuntimeError("not armed: run() writes (cycle() unarmed is the shadow mode)")
+    plan = [(name, int(n)) for name, n in (schedule or [])]
+    unknown = [name for name, _ in plan if name not in _goals()]
+    if unknown or any(n < 1 for _, n in plan):
+        raise ValueError(f"schedule {plan}: goals {unknown} unknown (goals: {sorted(_goals())}), or n < 1")
+    _log({"run": "started", "schedule": plan})
+    stop, current, left = None, None, None
+    try:
+        while stop is None:
+            if plan and not left:
+                current, left = plan.pop(0)
+                if current != e["name"]:
+                    e["next_goal"] = current            # switched by propose(), after the step's advance
+            step(background, streak_um_per_deg, seconds, cut_polarity)
+            p = propose()
+            if p is None:
+                stop = "the R3 alert" if e["beam_holds"] >= ALERT_HOLDS else "a hold"
+            elif not any(p["change"]) and any(p["asked"]):
+                stop = "the budget used up on both controls"
+            else:
+                left = None if left is None else left - 1      # counted first: an interrupt waits for the decision
+                try:
+                    apply(unattended=True)
+                except Exception as err:
+                    stop = f"a failed write ({err}); the episode ended"
+                    continue
+                if left == 0 and not plan:
+                    stop = "the end of the schedule"
+    except KeyboardInterrupt:
+        stop = "Ctrl-C"
+    rest = ([(current, left)] if left else []) + plan
+    if _episode is not None:
+        _episode.pop("next_goal", None)
+        _log({"run": "stopped", "reason": stop, "schedule_left": rest})
+    print(f"run stopped: {stop}" + (f"; schedule left: {rest}" if rest else ""))
+    return stop
 
 
 def state() -> dict:
@@ -291,9 +349,9 @@ def _decide(p: dict, decision: str, got: np.ndarray) -> dict:
     beam got if applied, else 0 and 0. An answer in time (applied or declined) restarts the idle timer."""
     p["decision"], p["applied"] = decision, got.tolist()
     if _episode is not None:
-        _episode["outcome"] = (np.array(p["action"]) if decision == "applied" else np.zeros(2), got)
+        _episode["outcome"] = (np.array(p["action"]) if decision.startswith("applied") else np.zeros(2), got)
         _log({"proposal": p["proposal"], "decision": decision, "applied": got.tolist()})
-    if decision in ("applied", "declined"):
+    if decision.startswith("applied") or decision == "declined":
         actuate.attended()
     return p
 

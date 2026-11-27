@@ -3,6 +3,8 @@ controller.py's bookkeeping; apply() and cycle() through actuate on the soft IOC
 and a proposal from a real step() on the soft IOC replaying a two-bunch DAQ step."""
 import itertools
 import json
+import os
+import signal
 import time
 
 import numpy as np
@@ -338,3 +340,86 @@ def test_propose_from_a_real_step(replay, monkeypatch):
     p = advise.propose()
     expected = advise.policy().act(controller.Episode(advise.policy(), goal, values).inputs())
     np.testing.assert_array_equal(p["action"], expected)
+
+
+def test_set_goal_keeps_the_history():
+    """controller.Episode.set_goal(): a goal change mid-episode as training's, history and cumulative change kept, the
+    goal error against the new goal with trend 0."""
+    p = advise.policy()
+    r = {"bunch_spacing": 150e-6, "drive_sigma_z": 90e-6}
+    e = controller.Episode(p, {"bunch_spacing": 160e-6, "drive_sigma_z": 90e-6}, r)
+    e.advance(np.array([0.5, -0.5]), np.array([0.1, -0.15]), {"bunch_spacing": 155e-6, "drive_sigma_z": 95e-6})
+    history, change = e.history.copy(), e.change.copy()
+    e.set_goal({"bunch_spacing": 200e-6, "drive_sigma_z": 100e-6}, {"bunch_spacing": 155e-6, "drive_sigma_z": 95e-6})
+    assert np.array_equal(e.history, history) and np.array_equal(e.change, change)
+    assert e.error[0] == pytest.approx((155e-6 - 200e-6) / 1e-5) and np.array_equal(e.error, e.error_before)
+
+
+def test_run_needs_an_armed_session(monkeypatch):
+    start(monkeypatch)
+    with pytest.raises(RuntimeError, match="not armed"):
+        advise.run(None, 1100.0)
+
+
+@needs_daq
+def test_run_until_the_budget_is_used_up(armed, monkeypatch):     # noqa: F811
+    """Unattended at full scale: L1 reaches its budget after 4 writes and L2 after 5; the next proposal is clipped to 0
+    on both and the run stops there, leaving it undecided."""
+    _, ledger, _ = armed
+    start(monkeypatch, *[fake() for _ in range(6)])
+    monkeypatch.setattr(advise.policy(), "act", lambda inputs: np.array([1.0, 1.0]))
+    assert advise.run(None, 1100.0) == "the budget used up on both controls"
+    done = [e for e in lines(ledger)[1:] if e["state"] == "done"]
+    assert [e["kind"] for e in done] == ["L1", "L2"] * 4 + ["L2"]
+    log = [json.loads(line) for line in advise._episode["log"].read_text().splitlines()]
+    assert [d["decision"] for d in log if "applied" in d] == ["applied (unattended)"] * 5          # decision lines
+    assert advise._proposal["decision"] is None and log[-1]["reason"] == "the budget used up on both controls"
+
+
+@needs_daq
+def test_run_with_a_goal_schedule(armed, monkeypatch):     # noqa: F811
+    """A schedule [(A, 2), (B, 2)]: two applied proposals on A, then B takes over mid-episode (after that step's
+    advance, as training's goal changes), two more, and the run stops at the end of the schedule."""
+    start(monkeypatch, fake(180.0), fake(182.0), fake(184.0), *[fake(170.0) for _ in range(4)])
+    for _ in range(3):
+        advise.step(None, 1100.0)
+    advise.record_goal("B")
+    monkeypatch.setattr(advise.policy(), "act", lambda inputs: np.array([0.2, 0.2]))
+    reference = controller.Episode(advise.policy(), advise._goals()["A"], advise._readings[2]["values"])
+    assert advise.run(None, 1100.0, schedule=[("A", 2), ("B", 2)]) == "the end of the schedule"
+    action, change = np.array([0.2, 0.2]), np.array([0.05, 0.06])
+    reference.advance(ZERO, ZERO, advise._readings[6]["values"])
+    reference.advance(action, change, advise._readings[7]["values"])
+    reference.advance(action, change, advise._readings[8]["values"])
+    reference.set_goal(advise._goals()["B"], advise._readings[8]["values"])
+    third = [json.loads(line) for line in advise._episode["log"].read_text().splitlines() if '"proposal": 3,' in line][0]
+    np.testing.assert_allclose(third["inputs"], reference.inputs(), atol=1e-12)
+    assert advise.state()["episode"] == "B" == actuate.episode and advise._episode["n"] == 4
+
+
+@needs_daq
+def test_run_stops_on_a_hold_and_reports_the_schedule_left(armed, monkeypatch, capsys):     # noqa: F811
+    start(monkeypatch, fake(), fake(valid=False, failed="+ frames >= 15"))
+    assert advise.run(None, 1100.0, schedule=[("A", 3)]) == "a hold"
+    assert "schedule left: [('A', 2)]" in capsys.readouterr().out
+    assert "next_goal" not in advise._episode
+
+
+@needs_daq
+def test_ctrl_c_during_a_write_waits_for_it(armed, monkeypatch):     # noqa: F811
+    """Ctrl-C (SIGINT) while a PREQ write is in flight: the write finishes, is checked and logged, the proposal is
+    decided as applied, and then the run stops; no write is left pending."""
+    _, ledger, _ = armed
+    start(monkeypatch, fake(), fake())
+    monkeypatch.setattr(advise.policy(), "act", lambda inputs: np.array([0.4, 0.4]))
+    put = actuate.put_preq
+
+    def interrupted(target):
+        os.kill(os.getpid(), signal.SIGINT)
+        put(target)
+    monkeypatch.setattr(actuate, "put_preq", interrupted)
+    assert advise.run(None, 1100.0) == "Ctrl-C"
+    entries = lines(ledger)[1:]
+    assert [(e["kind"], e["state"]) for e in entries] == [("L1", "pending"), ("L1", "done"), ("L2", "pending"),
+                                                          ("L2", "done")]
+    assert advise._proposal["decision"] == "applied (unattended)" and actuate.state()["pending"] == []
