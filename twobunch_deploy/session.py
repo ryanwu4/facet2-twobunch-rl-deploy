@@ -5,7 +5,8 @@ S4: tcav_test() of the TCAV readbacks and tags; peek() shows the newest frame's 
 of the L1 and L2 PVs; step() records them. S8: drift_test() of the bunch-length and drift PVs and optics_test() of the
 magnets; step() records both. S9: check_pvs() and status() for the console; watch() and peek_strip() to look at the
 frames between steps. W2 (v2): hold_test() and staircase() for the write sessions with the beam stopped at TD11; the
-writes themselves are in actuate.py."""
+writes themselves are in actuate.py. R16 (v2): start_pv_log() and stop_pv_log(), an optional record of the phase,
+bunch-length and TCAV PVs over a whole session."""
 from __future__ import annotations
 
 import datetime
@@ -721,3 +722,56 @@ def staircase(kind: str, step: float, n: int, hold_s: float = 10) -> dict:
                         pulse_id=[u.pulse_id for u in updates], timestamp=[u.timestamp for u in updates],
                         value=[u.value for u in updates])
     return summary
+
+
+_pv_log: dict | None = None     # the running PV log: its thread and stop event
+
+
+def start_pv_log(names: list[str] | None = None, file_s: float = 3600) -> None:
+    """R16, optional (off unless started; Ryan 11-26): a background thread records every update of `names` (default
+    the L1 and L2 phase, bunch-length and TCAV PVs, about 140 a second at 10 Hz) over the whole session, between steps
+    and during holds too, one file per `file_s` (data/<date>_V2/pvlog_<HHMMSS>.npz: each update's PV, pulse ID,
+    timestamp and value). Runs beside step()'s own monitors. stop_pv_log() saves the last file and ends it."""
+    import threading
+
+    import epics
+    from . import pvs
+
+    global _pv_log
+    if _pv_log is not None:
+        raise RuntimeError("the PV log is already running")
+    names = names or [*pvs.L1, *pvs.L2, *pvs.BLEN, pvs.TCAV_AMPLITUDE, pvs.TCAV_PHASE]
+    stop = threading.Event()
+    epics.ca.use_initial_context()          # made here, in the main thread; CAThread attaches the log's thread to it
+    thread = epics.ca.CAThread(target=_pv_log_loop, args=(names, file_s, stop), daemon=True)
+    _pv_log = {"thread": thread, "stop": stop}
+    thread.start()
+
+
+def stop_pv_log() -> None:
+    """End the PV log, saving its last file."""
+    global _pv_log
+    if _pv_log is not None:
+        _pv_log["stop"].set()
+        _pv_log["thread"].join()
+    _pv_log = None
+
+
+def _pv_log_loop(names: list[str], file_s: float, stop) -> None:
+    import numpy as np
+    from . import machine
+
+    while not stop.is_set():
+        began = datetime.datetime.now()
+        try:
+            with machine.updates(names) as got:
+                stop.wait(file_s)
+        except Exception as e:                  # a PV that doesn't answer: say so and try again, the log keeps going
+            print(f"PV log: {e!r}; trying again in 10 s")
+            stop.wait(10)
+            continue
+        path = DATA / f"{began:%Y-%m-%d}_V2" / f"pvlog_{began:%H%M%S}.npz"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(path, name=[u.name for u in got], pulse_id=[u.pulse_id for u in got],
+                            timestamp=[u.timestamp for u in got], value=[u.value for u in got])
+

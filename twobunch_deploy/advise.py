@@ -3,12 +3,14 @@ arm(), the limits, the budget and the ledger apply as in W1. Each episode's prop
 data/<date>_V2/episode_<HHMMSS_mmm>.jsonl. Goals are kept in data/goals.json until removed or replaced (R15).
 
 A session (v2 plan, 11-06):
+  pre_shift(entered)            the policy's envelope beside the live values and what the operator enters (R10, R16)
   step(background, streak)      readings, as session.step(), remembered here with the writes sent around them
   record_goal("A")              the mean of the last GOAL_READINGS valid readings, with no write between them
   actuate.arm("name"), actuate.move_l1() / move_l2()   detune, inside the budget
   use_goal("A")                 an episode on the latest reading, with no history, as training's reset
   remove_goal("A")              a goal that no longer applies
   cycle(background, streak)     step(), propose(), and when armed a y/N prompt: y applies, anything else declines
+  run(background, streak, schedule)   closed loop (R8): cycles applied without asking until a stop
   end_episode(); actuate.undo_all() or keep; actuate.disarm()
 
 Unarmed, cycle() is shadow mode: proposals are logged and nothing is written. The policy's inputs follow training's
@@ -32,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import actuate, controller, pvs, session
+from . import actuate, controller, machine, pvs, session
 
 POLICY = "nf_screen_full_s0"
 GOAL_READINGS = 3       # record_goal() averages this many valid readings
@@ -62,6 +64,50 @@ def policy() -> controller.Policy:
             raise ValueError(f"{POLICY}: controls {m['controls']} with steps {m['action_step']} don't fit pvs.WRITE")
         _policy = p
     return _policy
+
+
+def pre_shift(entered: dict) -> dict:
+    """R10, R16: the policy's envelope (the ranges it was trained on) beside the live values, for the before-shift
+    checklist, saved as the session's record (data/<date>_V2/session_<HHMMSS>.json) and printed one line per item.
+    Reads once: the TCAV amplitude, each magnet against TEST_15668's value (the 04-15 state the optics draws are about),
+    2 s of camera frames for the beam rate, and the free disk under data/. `entered` is what the operator enters, saved
+    as given; these keys are checked against the envelope when present: charge_nC, delay_ps, budget and step_scale
+    ({"L1": .., "L2": ..}). Other keys (the TCAV calibration and its sign, the cut polarity, ops' pulse lengths, the
+    feedback states) are recorded only. Nothing here refuses: the operator ticks the checklist."""
+    import shutil
+
+    envelope = policy().manifest.get("envelope", {})
+    tcav = machine.describe([pvs.TCAV_AMPLITUDE])[pvs.TCAV_AMPLITUDE]
+    magnets = machine.describe(list(pvs.MAGNETS))
+    steps = session.pulse_id_steps([f.pulse_id for f in machine.frames(2)])
+    rate = session.PULSES_PER_SECOND / max(steps, key=steps.get) if steps else None
+    session.DATA.mkdir(parents=True, exist_ok=True)
+    rows = [("TCAV amplitude, MV", envelope.get("tcav_MV"), None if tcav is None else tcav["value"]),
+            ("beam rate, Hz (capture 15 s at 10 Hz, 30 s at 5 Hz)", None, rate),
+            ("free disk under data/, GB (5-10 MB a step)", None, shutil.disk_usage(session.DATA).free / 1e9)]
+    for name, m in magnets.items():
+        label = pvs.MAGNETS[name].split(" supply")[0]
+        frac = envelope.get("ff_quad_fraction", {}).get(label, envelope.get("sextupole_fraction")
+                                                         if label.startswith("sextupole") else None)
+        ratio = None if m is None else m["value"] / pvs.MAGNETS_IN_DAQ[name]
+        rows.append((f"{label}, x TEST_15668", None if frac is None else [1 - frac, 1 + frac], ratio))
+    for key, span in (("charge_nC", "charge_nC"), ("delay_ps", "delay_ps")):
+        rows.append((f"{key} (entered)", envelope.get(span), entered.get(key)))
+    for key, span in (("budget", "budget_deg"), ("step_scale", "step_scale")):
+        for kind, control in KINDS.items():
+            rows.append((f"{key} {control} (entered)", envelope.get(span, {}).get(kind),
+                         entered.get(key, {}).get(control)))
+    table = [{"item": item, "trained": span, "value": value,
+              "inside": None if span is None or value is None else span[0] <= value <= span[1]}
+             for item, span, value in rows]
+    for row in table:
+        flag = {True: "ok", False: "OUTSIDE", None: ""}[row["inside"]]
+        print(f"{row['item']:<52} {str(row['trained']):<26} {row['value']!s:<24} {flag}")
+    record = {"policy": POLICY, "envelope": envelope, "entered": entered, "table": table,
+              "tcav": tcav, "magnets": magnets, "pulse_id_steps": steps}
+    now = datetime.datetime.now()
+    (_day() / f"session_{now:%H%M%S}.json").write_text(json.dumps(record, indent=1, default=str) + "\n")
+    return record
 
 
 def step(background, streak_um_per_deg: float, seconds: float = 15, cut_polarity: str = "+") -> session.Reading:
@@ -181,6 +227,13 @@ def propose() -> dict | None:
             e["inputs"] = controller.Episode(policy(), e["goal"], latest["values"], scale)
             print(f"episode at {policy().manifest['episode_length']} steps: restarted on goal {e['name']}")
             _log({"restarted": True, "reading": latest["reading"].path})
+    if e.get("next_goal"):                  # a schedule's next goal (run()), after the step's advance as in training
+        name = e.pop("next_goal")
+        e["name"], e["goal"] = name, _goals()[name]
+        e["inputs"].set_goal(e["goal"], latest["values"])
+        actuate.episode = name
+        _log({"goal_change": name, "goal_record": e["goal"]})
+        print(f"goal now {name}")
     armed, net, budget, scale = _limits()
     if armed and not np.allclose(scale or [1.0, 1.0], e["inputs"].step_scale):
         raise RuntimeError(f"the episode runs at step setting {e['inputs'].step_scale.tolist()}, the session is "
@@ -199,10 +252,10 @@ def propose() -> dict | None:
     return _proposal
 
 
-def apply() -> dict:
+def apply(unattended: bool = False) -> dict:
     """Write the latest proposal, once: L1 (unless its change is 0), then L2 (unless under MIN_L2_MOVE). Refused if it
     has been decided, expired (EXPIRE_S) or a newer reading taken, or if not armed. A failed write ends the episode
-    (actuate disarms)."""
+    (actuate disarms). Ctrl-C meanwhile waits until the writes are made, checked and the decision recorded (R8)."""
     p = _undecided()
     if not actuate.state()["armed"]:
         raise RuntimeError("not armed: the proposal stays undecided (shadow)")
@@ -210,18 +263,20 @@ def apply() -> dict:
         _decide(p, "expired", np.zeros(2))
         raise RuntimeError(f"proposal {p['proposal']} expired ({EXPIRE_S:.0f} s): not applied")
     got = np.zeros(2)
-    try:
-        if p["change"][0] != 0:
-            actuate.move_l1(p["change"][0], proposal=p["proposal"])
-            got[0] = p["change"][0]
-        if abs(p["change"][1]) >= MIN_L2_MOVE:
-            actuate.move_l2(p["change"][1], proposal=p["proposal"])
-            got[1] = p["change"][1]
-    except Exception:
-        _decide(p, "failed", got)
-        end_episode()
-        raise
-    return _decide(p, "applied", got)
+    with actuate.held_interrupt():
+        try:
+            if p["change"][0] != 0:
+                actuate.move_l1(p["change"][0], proposal=p["proposal"])
+                got[0] = p["change"][0]
+            if abs(p["change"][1]) >= MIN_L2_MOVE:
+                actuate.move_l2(p["change"][1], proposal=p["proposal"])
+                got[1] = p["change"][1]
+        except Exception:
+            _decide(p, "failed", got)
+            end_episode()
+            raise
+        _decide(p, "applied (unattended)" if unattended else "applied", got)
+    return p
 
 
 def decline() -> dict:
@@ -242,6 +297,54 @@ def cycle(background, streak_um_per_deg: float, seconds: float = 15, cut_polarit
         print(f"answered after {EXPIRE_S:.0f} s: proposal {p['proposal']} expired, not applied")
         return _decide(p, "expired", np.zeros(2))
     return apply() if answer == "y" else decline()
+
+
+def run(background, streak_um_per_deg: float, schedule: list | None = None, seconds: float = 15,
+        cut_polarity: str = "+") -> str:
+    """Closed loop (R8): cycles (step(), propose(), apply()) without asking, until a stop: a hold (the R3 alert among
+    them), a failed write, a proposal clipped to 0 on both controls (the budget used up), the end of the schedule, or
+    Ctrl-C (a write in flight finishes first). Needs the running episode and an armed session. `schedule`: [(goal name,
+    n), ...]: each goal for n applied proposals, then the next takes over mid-episode as training's goal changes did
+    (history kept, the goal error restarting at the new goal); without one the episode's goal is kept. A stop ends the
+    schedule; to go on, pass the rest. Prints and returns why it stopped, and logs it; the episode stays, approved."""
+    e = _running()
+    if not actuate.state()["armed"]:
+        raise RuntimeError("not armed: run() writes (cycle() unarmed is the shadow mode)")
+    plan = [(name, int(n)) for name, n in (schedule or [])]
+    unknown = [name for name, _ in plan if name not in _goals()]
+    if unknown or any(n < 1 for _, n in plan):
+        raise ValueError(f"schedule {plan}: goals {unknown} unknown (goals: {sorted(_goals())}), or n < 1")
+    _log({"run": "started", "schedule": plan})
+    stop, current, left = None, None, None
+    try:
+        while stop is None:
+            if plan and not left:
+                current, left = plan.pop(0)
+                if current != e["name"]:
+                    e["next_goal"] = current            # switched by propose(), after the step's advance
+            step(background, streak_um_per_deg, seconds, cut_polarity)
+            p = propose()
+            if p is None:
+                stop = "the R3 alert" if e["beam_holds"] >= ALERT_HOLDS else "a hold"
+            elif not any(p["change"]) and any(p["asked"]):
+                stop = "the budget used up on both controls"
+            else:
+                left = None if left is None else left - 1      # counted first: an interrupt waits for the decision
+                try:
+                    apply(unattended=True)
+                except Exception as err:
+                    stop = f"a failed write ({err}); the episode ended"
+                    continue
+                if left == 0 and not plan:
+                    stop = "the end of the schedule"
+    except KeyboardInterrupt:
+        stop = "Ctrl-C"
+    rest = ([(current, left)] if left else []) + plan
+    if _episode is not None:
+        _episode.pop("next_goal", None)
+        _log({"run": "stopped", "reason": stop, "schedule_left": rest})
+    print(f"run stopped: {stop}" + (f"; schedule left: {rest}" if rest else ""))
+    return stop
 
 
 def state() -> dict:
@@ -291,9 +394,9 @@ def _decide(p: dict, decision: str, got: np.ndarray) -> dict:
     beam got if applied, else 0 and 0. An answer in time (applied or declined) restarts the idle timer."""
     p["decision"], p["applied"] = decision, got.tolist()
     if _episode is not None:
-        _episode["outcome"] = (np.array(p["action"]) if decision == "applied" else np.zeros(2), got)
+        _episode["outcome"] = (np.array(p["action"]) if decision.startswith("applied") else np.zeros(2), got)
         _log({"proposal": p["proposal"], "decision": decision, "applied": got.tolist()})
-    if decision in ("applied", "declined"):
+    if decision.startswith("applied") or decision == "declined":
         actuate.attended()
     return p
 

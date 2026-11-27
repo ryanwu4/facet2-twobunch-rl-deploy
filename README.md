@@ -25,6 +25,8 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | W1 (v2) | The write path (`actuate.py`): `arm`, `move_l1`, `move_l2`, `undo_all`, the ledger; the write session with the beam stopped at TD11 (`hold_test`, `staircase`) |
 | P1a (v2) | The policy: its numpy runner and the inputs it is given, checked against the training env; no machine access |
 | P1b (v2) | Goals, episodes and proposals (`advise.py`): shadow mode, and the cycle that applies each proposal a person approves |
+| R1–R15 (v2) | The next controller (`docs/next_controller_handshake.md`): the new policy, the budget and step setting per session, goals kept across days; holds sorted and alerted, reversed bunches held, the cut polarity |
+| R8, R16 (v2) | The closed loop (`advise.run()`, goal schedules, Ctrl-C held during writes); the pre-shift record, an optional PV log, the session table |
 
 ## Layout
 
@@ -38,11 +40,13 @@ Built one stage per PR. Each PR is tested offline, run on the machine from its b
 | `twobunch_deploy/actuate.py` | The only writes (v2): arming, the moves, the ledger, undo |
 | `twobunch_deploy/viz.py` | Plots |
 | `twobunch_deploy/controller.py` | The policy in numpy and its inputs, built as training built them |
-| `twobunch_deploy/advise.py` | Goals, episodes, proposals and the approved cycle; writes only through `actuate.py` |
+| `twobunch_deploy/advise.py` | Goals, episodes, proposals, the approved cycle and the closed loop; writes only through `actuate.py` |
 | `policies/<name>/` | An exported policy (twobunch-s2e-rl `deploy_export`): manifest, weights, and the reference data its tests check |
 | `console.ipynb` | The calls for a session at the machine, with its checklists |
 | `commissioning.ipynb` | One section per stage |
 | `tests/` | Offline tests; never imported by the package |
+| `tools/session_table.py` | One table per session day from the copied-back records (run here, not on the host) |
+| `docs/next_controller_handshake.md` | What the next controller assumes, its handshake with this runner, and the runner's work list |
 
 ## Offline
 

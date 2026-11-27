@@ -4,6 +4,7 @@ else, and here allows them only in put_preq() and turn_knob().
 W1  arm(), disarm(), move_l1(), move_l2(), undo_all(), state(); pvaccess_version() for the session's record
 P1b episode and attended(), for advise.py: manual moves are refused while an episode runs (its moves come from
     advise.apply(), with the proposal's number in the ledger), and answering a proposal counts as activity
+R8  held_interrupt(): Ctrl-C during a write is held until the write and its readback check finish
 
 What can be written is in pvs: the two L1 phase setpoints (PREQ, absolute) and the L2 phase multiknob (a delta), each
 write at most one policy action, and the net move per armed session within a budget. Nothing is written before arm(),
@@ -13,11 +14,15 @@ readback check. undo_all() reverses a ledger's writes from any process, so a ses
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
+import functools
 import importlib.metadata
 import json
 import os
+import signal
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -34,6 +39,7 @@ UNDO_PAUSE_S = 1.0      # between undo_all()'s writes, so the setpoints step bac
 _session: dict | None = None    # this process's armed session: name, ledger, last write's time, multiknob connection
 writes = 0                      # writes this process has sent, in any session (advise.py checks readings against it)
 episode: str | None = None      # the goal of the episode advise.py is running: manual moves are refused meanwhile
+_holding = False                # held_interrupt() is holding Ctrl-C
 
 
 def lock_path() -> Path:
@@ -189,6 +195,35 @@ def last_write() -> dict | None:
     return done[-1] if done else None
 
 
+@contextlib.contextmanager
+def held_interrupt():
+    """Ctrl-C inside the block is held until the block ends, then raised: a write and its readback check always finish
+    and are logged (R8, Ryan 11-26). Nested blocks hold to the outermost; an exception raised in the block wins."""
+    global _holding
+    if _holding or threading.current_thread() is not threading.main_thread():     # signals reach the main thread only
+        yield
+        return
+    caught = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: caught.append(signum))
+    _holding = True
+    try:
+        yield
+    finally:
+        _holding = False
+        signal.signal(signal.SIGINT, previous)
+    if caught:
+        raise KeyboardInterrupt("held until the write and its check had finished")
+
+
+def _held(write):
+    """A write function whose call holds Ctrl-C until it returns (held_interrupt)."""
+    @functools.wraps(write)
+    def held(*args, **kw):
+        with held_interrupt():
+            return write(*args, **kw)
+    return held
+
+
 def attended() -> None:
     """Someone answered a proposal (advise.py): restart the idle timer, as a write does."""
     if _session is not None:
@@ -253,6 +288,7 @@ def _check(kind: str, delta: float) -> None:
         raise ValueError(f"{kind} {delta:+.3f} deg would take the net move past the budget (+-{limit['budget']} deg)")
 
 
+@_held
 def _write_l1(delta: float, before: dict, target: dict, undo: dict | None = None, proposal: int | None = None) -> dict:
     entry = _log({"kind": "L1", "delta": delta, "before": before, "target": target, "undo": undo, "state": "pending",
                   **({"proposal": proposal} if proposal is not None else {})})
@@ -266,6 +302,7 @@ def _write_l1(delta: float, before: dict, target: dict, undo: dict | None = None
     return entry
 
 
+@_held
 def _write_l2(delta: float, before: dict, undo: dict | None = None, proposal: int | None = None) -> dict:
     entry = _log({"kind": "L2", "delta": delta, "before": before, "undo": undo, "state": "pending",
                   **({"proposal": proposal} if proposal is not None else {})})
