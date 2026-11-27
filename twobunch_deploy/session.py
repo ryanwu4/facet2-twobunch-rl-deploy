@@ -471,12 +471,14 @@ class Reading(NamedTuple):
         viz.step(self.record, self.medians, self.updates).savefig(Path(self.path).with_suffix(".png"))
 
 
-def step(background: Background, streak_um_per_deg: float, seconds: float = 15, drop_s: float = 1.0) -> Reading:
+def step(background: Background, streak_um_per_deg: float, seconds: float = 15, drop_s: float = 1.0,
+         cut_polarity: str = "+") -> Reading:
     """S5: one measurement step. Captures for `seconds` with the TCAV readbacks (acquire.capture: each frame tagged,
     and the + and - frames less than `drop_s` after their polarity window began dropped), then reads the frames as
-    the deployed analysis does (screen.read_step) with `background` and the TCAV calibration `streak_um_per_deg`.
-    The calibration is in um on the screen per degree at the live pixel size (RESOLUTION): one measured at another
-    pixel size must be rescaled first.
+    the deployed analysis does (screen.read_step) with `background`, the TCAV calibration `streak_um_per_deg` and the
+    energy cut from the `cut_polarity` frames (the session's, from its TCAV sign pairing: R13). The calibration is in
+    um on the screen per degree at the live pixel size (RESOLUTION): one measured at another pixel size must be
+    rescaled first.
 
     Without both polarities, an off frame or a cut the reading is invalid (its checks say which), but everything the
     frames allow is still computed and recorded. Saves data/<date>_S5/step_<HHMMSS>.json (the reading and its checks,
@@ -498,7 +500,7 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
     captured = time.perf_counter()
     crops = np.stack([screen.trained_frame(f.data, capture.camera) for f in capture.frames])
     x = screen.x_positions(capture.camera["RESOLUTION"])
-    read = screen.read_step(crops, capture.tags, capture.drop, background.image, x, streak_um_per_deg)
+    read = screen.read_step(crops, capture.tags, capture.drop, background.image, x, streak_um_per_deg, cut_polarity)
     done = time.perf_counter()
 
     reference = None
@@ -522,7 +524,8 @@ def step(background: Background, streak_um_per_deg: float, seconds: float = 15, 
             polarity[sign]["witness_low"] = bool(np.mean([s["witness_low"] for s in stats]) > 0.5)
     r = read.reading
     record = {
-        "background": background.path, "streak_um_per_deg": streak_um_per_deg, "seconds": seconds, "drop_s": drop_s,
+        "background": background.path, "streak_um_per_deg": streak_um_per_deg, "cut_polarity": cut_polarity,
+        "seconds": seconds, "drop_s": drop_s,
         "camera": capture.camera, "frames": len(capture.frames),
         "updates": dict(Counter(u.name for u in capture.updates)), "tags": dict(Counter(capture.tags)),
         "reference": reference, "cut_row": read.cut, "polarity": polarity,

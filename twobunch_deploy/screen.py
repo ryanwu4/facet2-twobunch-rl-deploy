@@ -242,12 +242,13 @@ def shift_rows(image: np.ndarray, shifts: np.ndarray) -> np.ndarray:
                                    cval=0.0)
 
 
-def step_cut(plus: list[np.ndarray]) -> int | None:
-    """The step's energy cut, for its +V and -V frames, from its +V frames (processed, row-corrected): the median of
-    the frames' own valley cuts, rounded; None if fewer than half of them have one (online/features.step_cut). A -V
-    frame's own valley can lock onto another dip: the TCAV's energy kick changes sign with the polarity."""
-    cuts = [c for c in (valley(frame.sum(axis=1)).cut for frame in plus) if c is not None]
-    if not cuts or 2 * len(cuts) < len(plus):
+def step_cut(frames: list[np.ndarray]) -> int | None:
+    """The step's energy cut, for its +V and -V frames, from one polarity's frames (processed, row-corrected;
+    read_step's cut_polarity): the median of the frames' own valley cuts, rounded; None if fewer than half of them have
+    one (online/features.step_cut). The other polarity's own valley can lock onto another dip: the TCAV's energy kick
+    changes sign with the polarity."""
+    cuts = [c for c in (valley(frame.sum(axis=1)).cut for frame in frames) if c is not None]
+    if not cuts or 2 * len(cuts) < len(frames):
         return None
     return int(round(float(np.median(cuts))))
 
@@ -302,11 +303,13 @@ class StepReading(NamedTuple):
 
 
 def read_step(crops: np.ndarray, tags: np.ndarray, drop: np.ndarray, background: np.ndarray, x: np.ndarray,
-              streak_um_per_deg: float) -> StepReading:
+              streak_um_per_deg: float, cut_polarity: str = "+") -> StepReading:
     """One step's reading from its frames, as the deployed analysis reads a DAQ step (xtcav_online_replay.py, v7):
     1. process each +, - and off frame (process);
     2. the row-correction reference from the off frames (row_reference), and each + and - frame's rows shifted by it;
-    3. the step's cut from the kept + frames (step_cut), and each + and - frame's band statistics at that cut;
+    3. the step's cut from the kept frames of `cut_polarity` (step_cut; "+" as the DAQ analysis, "-" where the
+       session's TCAV sign pairing is reversed against E300's, as on E331, R13), and each + and - frame's band
+       statistics at that cut;
     4. the reading from the kept frames with statistics (reading).
     The reading is valid if all its checks pass: at least MIN_FRAMES such frames per polarity, a reference, a cut,
     |spacing| above SPACING_FLOOR and the edge fraction below EDGE_MAX (these two v7's own rule), and beam: each
@@ -323,7 +326,7 @@ def read_step(crops: np.ndarray, tags: np.ndarray, drop: np.ndarray, background:
     frames = {i: image if reference is None or tags[i] == "off" else shift_rows(image, reference.shifts)
               for i, image in processed.items()}
     kept = {sign: [i for i in frames if tags[i] == sign and not drop[i]] for sign in ("+", "-")}
-    cut = step_cut([frames[i] for i in kept["+"]])
+    cut = step_cut([frames[i] for i in kept[cut_polarity]])
     stats = [band_stats(frames[i], x, cut) if i in frames and tags[i] != "off" and cut is not None else None
              for i in range(len(tags))]
     good = {sign: [stats[i] for i in kept[sign] if stats[i] is not None] for sign in ("+", "-")}

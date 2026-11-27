@@ -143,6 +143,21 @@ def test_read_step():
     assert [k for k, ok in r.checks.items() if not ok] == list(r.checks)[:2] + ["step cut"] + list(r.checks)[4:]
 
 
+def test_read_step_cut_polarity():
+    """The energy cut from the - frames (R13): with the + frames' bands 10 rows lower, the default cut follows the +
+    frames and cut_polarity="-" the - frames; both polarities' statistics use the cut taken."""
+    tags = ["off"] * 2 + ["+"] * 16 + ["-"] * 16
+    crops, tags, drop, background = frames_for(tags)
+    crops[2:18] = np.rint(background + 50 * np.roll(two_bands(80), 10, axis=0)).astype("int16")
+    plus = screen.read_step(crops, tags, drop, background, X, 1100.0)
+    minus = screen.read_step(crops, tags, drop, background, X, 1100.0, cut_polarity="-")
+    corrected = [screen.shift_rows(screen.process(crop, background), minus.reference.shifts) for crop in crops]
+    cut = {sign: screen.step_cut([f for f, t in zip(corrected, tags) if t == sign]) for sign in "+-"}
+    assert plus.cut == cut["+"] and minus.cut == cut["-"] and plus.cut != minus.cut
+    assert minus.stats[2] == screen.band_stats(corrected[2], X, minus.cut)
+    assert minus.stats[20] == screen.band_stats(corrected[20], X, minus.cut)
+
+
 def test_step_figure():
     tags = ["off"] * 2 + ["+"] * 16 + ["neither"] + ["-"] * 16 + ["unmatched"]
     crops, tags, drop, background = frames_for(tags)

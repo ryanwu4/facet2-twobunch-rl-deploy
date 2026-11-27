@@ -64,11 +64,11 @@ def policy() -> controller.Policy:
     return _policy
 
 
-def step(background, streak_um_per_deg: float, seconds: float = 15) -> session.Reading:
+def step(background, streak_um_per_deg: float, seconds: float = 15, cut_polarity: str = "+") -> session.Reading:
     """session.step(), remembered for record_goal() and propose() with when it began and the writes sent before and
     after it."""
     before, began = actuate.writes, time.time()
-    reading = session.step(background, streak_um_per_deg, seconds)
+    reading = session.step(background, streak_um_per_deg, seconds, cut_polarity=cut_polarity)
     _readings.append({"reading": reading, "values": values(reading), "writes": (before, actuate.writes),
                       "began": began})
     return reading
@@ -229,11 +229,11 @@ def decline() -> dict:
     return _decide(_undecided(), "declined", np.zeros(2))
 
 
-def cycle(background, streak_um_per_deg: float, seconds: float = 15) -> dict | None:
+def cycle(background, streak_um_per_deg: float, seconds: float = 15, cut_polarity: str = "+") -> dict | None:
     """One cycle: step(), propose(), then, if armed, `apply? [y/N]`: y applies the proposal, anything else declines
     it; an answer after EXPIRE_S declines it as expired. Unarmed (shadow mode) nothing is asked or written. Returns
     the proposal, or None if the reading was invalid."""
-    step(background, streak_um_per_deg, seconds)
+    step(background, streak_um_per_deg, seconds, cut_polarity)
     p = propose()
     if p is None or not p["armed"]:
         return p
