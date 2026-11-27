@@ -173,6 +173,26 @@ def test_apply_writes_through_actuate(armed, monkeypatch):     # noqa: F811
 
 
 @needs_daq
+def test_proposals_use_the_session_settings(fresh, monkeypatch):     # noqa: F811
+    """Armed with a step setting and a budget: the episode's inputs end with the setting, the change is the action times
+    the session's step, clipped to its budget. Armed again at another setting, the episode refuses to propose."""
+    actuate.arm("test", budget={"L1": 0.2}, step_scale={"L1": 0.5, "L2": 0.5})
+    start(monkeypatch, fake(), fake(), fake())
+    monkeypatch.setattr(advise.policy(), "act", lambda inputs: np.array([1.0, -1.0]))
+    p = advise.propose()
+    assert p["step"] == pytest.approx([0.125, 0.15]) and p["change"] == pytest.approx([0.125, -0.15])
+    assert p["budget"] == [0.2, 1.5] and p["inputs"][-2:] == [0.5, 0.5]
+    advise.apply()
+    advise.step(None, 1100.0)
+    assert advise.propose()["change"] == pytest.approx([0.075, -0.15])         # 0.2 - 0.125 left on L1
+    actuate.disarm()
+    actuate.arm("test")
+    advise.step(None, 1100.0)
+    with pytest.raises(RuntimeError, match="use_goal"):
+        advise.propose()
+
+
+@needs_daq
 def test_small_l2_changes_and_the_budget(armed, monkeypatch):     # noqa: F811
     """L1 at full scale reaches the budget after 4 writes, then is clipped to 0 and not written; an L2 change of
     0.015 deg is never written. Both count as what the beam got."""

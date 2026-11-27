@@ -106,13 +106,14 @@ def use_goal(name: str) -> dict:
         raise RuntimeError("the latest reading is invalid: an episode starts on a valid one")
     end_episode()
     now = datetime.datetime.now()
-    _episode = {"name": name, "goal": goal, "inputs": controller.Episode(policy(), goal, latest["values"]),
+    scale = _limits()[3]
+    _episode = {"name": name, "goal": goal, "inputs": controller.Episode(policy(), goal, latest["values"], scale),
                 "reading": latest, "proposed": False, "outcome": None, "n": 0,
                 "log": _day() / f"episode_{now:%H%M%S}_{now.microsecond // 1000:03d}.jsonl"}
     _proposal = None
     actuate.episode = name
     files = [controller.POLICIES / POLICY / f for f in ("policy.json", "weights.npz")]
-    return _log({"goal": name, "goal_record": goal, "policy": POLICY,
+    return _log({"goal": name, "goal_record": goal, "step_scale": scale, "policy": POLICY,
                  "policy_sha256": hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest(),
                  "code_sha256": session.code_sha256(), "reading": latest["reading"].path})
 
@@ -129,7 +130,9 @@ def end_episode() -> None:
 def propose() -> dict | None:
     """The policy's proposal from the latest reading, logged and printed; None, with the reason, if the reading is
     invalid. A newer reading first advances the episode with the last decision's outcome (none, or not applied: action
-    and change 0). The change is clipped to the armed session's budget (unarmed: nothing has been written)."""
+    and change 0). The change is the action times the session's step, clipped to its budget (unarmed: nothing has been
+    written, pvs.WRITE's budget). Refused if the session is armed at another step setting than the episode began
+    with."""
     global _proposal
     e = _running()
     latest = _latest()
@@ -145,20 +148,24 @@ def propose() -> dict | None:
         e["inputs"].advance(action, change, latest["values"])
         e.update(reading=latest, outcome=None)
         if e["inputs"].over:
-            e["inputs"] = controller.Episode(policy(), e["goal"], latest["values"])
+            scale = e["inputs"].step_scale if e["inputs"].scaled else None
+            e["inputs"] = controller.Episode(policy(), e["goal"], latest["values"], scale)
             print(f"episode at {policy().manifest['episode_length']} steps: restarted on goal {e['name']}")
             _log({"restarted": True, "reading": latest["reading"].path})
-    p, armed = policy(), actuate.state()["armed"]
+    armed, net, budget, scale = _limits()
+    if armed and not np.allclose(scale or [1.0, 1.0], e["inputs"].step_scale):
+        raise RuntimeError(f"the episode runs at step setting {e['inputs'].step_scale.tolist()}, the session is "
+                           f"armed at {scale or [1.0, 1.0]}: use_goal() again")
     inputs = e["inputs"].inputs()
-    action = p.act(inputs)
-    net = np.array([actuate.state()["net"][k] for k in pvs.WRITE]) if armed else np.zeros(2)
-    budget = np.array([pvs.WRITE[k]["budget"] for k in pvs.WRITE])
-    change = controller.clip(action, p.manifest["action_step"], net, budget)
+    action = policy().act(inputs)
+    step = e["inputs"].step
+    change = controller.clip(action, step, net, budget)
     e["n"], e["proposed"] = e["n"] + 1, True
     _proposal = _log({"proposal": e["n"], "made": time.time(), "reading": latest["reading"].path,
                       "episode_step": e["inputs"].steps, "armed": armed, "values": latest["values"],
-                      "action": action.tolist(), "asked": (action * p.manifest["action_step"]).tolist(),
-                      "change": change.tolist(), "net": net.tolist(), "inputs": inputs.tolist(), "decision": None})
+                      "action": action.tolist(), "asked": (action * step).tolist(), "change": change.tolist(),
+                      "net": net.tolist(), "budget": budget.tolist(), "step": step.tolist(), "inputs": inputs.tolist(),
+                      "decision": None})
     print(_line(_proposal, e))
     return _proposal
 
@@ -238,6 +245,17 @@ def _undecided() -> dict:
     return _proposal
 
 
+def _limits() -> tuple[bool, np.ndarray, np.ndarray, list | None]:
+    """Armed or not, and per control the net move, the budget and the step setting (None when 1 for both). Unarmed:
+    nothing written, pvs.WRITE's budget, setting 1."""
+    st = actuate.state()
+    if not st["armed"]:
+        return False, np.zeros(2), np.array([pvs.WRITE[k]["budget"] for k in pvs.WRITE]), None
+    scale = [st["step_scale"][k] for k in pvs.WRITE]
+    return (True, np.array([st["net"][k] for k in pvs.WRITE]), np.array([st["write"][k]["budget"] for k in pvs.WRITE]),
+            None if scale == [1.0, 1.0] else scale)
+
+
 def _running() -> dict:
     if _episode is None or actuate.episode != _episode["name"]:
         raise RuntimeError("no episode running: use_goal() first")
@@ -272,7 +290,7 @@ def _line(p: dict, e: dict) -> str:
     change = ", ".join(f"{k} {c:+.3f} deg" + (f" (clipped from {a:+.3f})" if abs(c - a) > 1e-9 else "")
                        for k, c, a in zip(pvs.WRITE, p["change"], p["asked"]))
     small = " (L2 under the minimum: not written)" if 0 < abs(p["change"][1]) < MIN_L2_MOVE else ""
-    net = ", ".join(f"{k} {n:+.2f}/{pvs.WRITE[k]['budget']}" for k, n in zip(pvs.WRITE, p["net"]))
+    net = ", ".join(f"{k} {n:+.2f}/{b}" for k, n, b in zip(pvs.WRITE, p["net"], p["budget"]))
     return (f"proposal {p['proposal']} (episode step {p['episode_step']}, goal {e['name']}): "
             f"spacing {1e6 * v['bunch_spacing']:.1f} um (goal {1e6 * g['bunch_spacing']:.1f}), "
             f"drive sigma_z {1e6 * v['drive_sigma_z']:.1f} um (goal {1e6 * g['drive_sigma_z']:.1f}) | "
