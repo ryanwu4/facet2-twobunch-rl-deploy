@@ -40,9 +40,11 @@ def lock_path() -> Path:
     return session.DATA / "armed.lock"
 
 
-def arm(name: str) -> dict:
-    """Arm this process to write, as `name`: take the lock, check that PREQ's feedback is off (no PREQ update in
-    QUIET_S), read the starting setpoints and open a ledger with them as its first line, which is returned.
+def arm(name: str, budget: dict | None = None, step_scale: dict | None = None) -> dict:
+    """Arm this process to write, as `name`, with the session's `budget` (net move per kind, deg; default pvs.WRITE's)
+    and `step_scale` (per kind, within pvs.STEP_SCALE; default 1): the largest write is pvs.WRITE's step times it. Take
+    the lock, check that PREQ's feedback is off (no PREQ update in QUIET_S), read the starting setpoints and open a
+    ledger with them and the session's limits as its first line, which is returned.
 
     Refuses if this process is armed already, if a running process holds the lock, or if PREQ updated. A lock left by
     a process that no longer runs on this host is taken over, saying so: then undo_all() can reverse its ledger.
@@ -50,6 +52,13 @@ def arm(name: str) -> dict:
     global _session
     if _session is not None:
         raise RuntimeError(f"already armed, as {_session['name']}")
+    if set(budget or {}) - set(pvs.WRITE) or set(step_scale or {}) - set(pvs.WRITE):
+        raise ValueError(f"budget and step_scale take the kinds {list(pvs.WRITE)}")
+    scale = {k: float((step_scale or {}).get(k, 1.0)) for k in pvs.WRITE}
+    if not all(pvs.STEP_SCALE[0] <= v <= pvs.STEP_SCALE[1] for v in scale.values()):
+        raise ValueError(f"step setting {scale} outside {pvs.STEP_SCALE}")
+    budget = {k: float((budget or {}).get(k, pvs.WRITE[k]["budget"])) for k in pvs.WRITE}
+    write = {k: {"step": pvs.WRITE[k]["step"] * scale[k], "budget": budget[k]} for k in pvs.WRITE}
     if lock_path().exists():
         held = json.loads(lock_path().read_text())
         if held["host"] != socket.gethostname() or _running(held["pid"]):
@@ -65,13 +74,14 @@ def arm(name: str) -> dict:
     ledger = (session.DATA / f"{now:%Y-%m-%d}_V2" / f"ledger_{now:%H%M%S}.jsonl").resolve()
     ledger.parent.mkdir(parents=True, exist_ok=True)
     first = {"armed": name, "time": now.isoformat(timespec="seconds"), "pid": os.getpid(),
-             "host": socket.gethostname(), "write": pvs.WRITE, "multiknob": pvs.MULTIKNOB, "p4p": pvaccess_version(),
+             "host": socket.gethostname(), "write": write, "step_scale": scale, "multiknob": pvs.MULTIKNOB,
+             "p4p": pvaccess_version(),
              "start": {n: machine.get(n) for n in [*pvs.L1_SETPOINTS, *pvs.MULTIKNOB_MOVES]}}
     with open(ledger, "x") as f:                            # never over an existing ledger
         print(json.dumps(first), file=f)
     lock_path().write_text(json.dumps({"name": name, "pid": os.getpid(), "host": socket.gethostname(),
                                        "time": first["time"], "ledger": str(ledger)}))
-    _session = {"name": name, "ledger": ledger, "last": time.time(), "knob": None}
+    _session = {"name": name, "ledger": ledger, "last": time.time(), "knob": None, "write": write, "step_scale": scale}
     return first
 
 
@@ -144,7 +154,11 @@ def undo_all(ledger: str | Path | None = None) -> list[dict]:
             disarm()
             raise RuntimeError(f"write {e['write']} of {path} can't be undone: its setpoints are {now}, not "
                                f"{e['after']}; disarmed")
-        _check(e["kind"], -e["delta"])
+        try:
+            _check(e["kind"], -e["delta"])
+        except ValueError as err:           # this session's limits are smaller than the undone one's
+            limits = json.loads(path.read_text().splitlines()[0])["write"]
+            raise ValueError(f"{err}. To undo {path.name}, arm with at least its limits: {limits}") from None
         if undone:
             time.sleep(UNDO_PAUSE_S)
         undo = {"ledger": str(path), "write": e["write"]}
@@ -162,8 +176,8 @@ def state() -> dict:
         return {"armed": False, "lock": json.loads(lock_path().read_text()) if lock_path().exists() else None}
     entries = _entries(_session["ledger"])
     ended = {e["write"] for e in entries if e["state"] != "pending"}
-    return {"armed": True, "name": _session["name"], "ledger": str(_session["ledger"]),
-            "net": {kind: _net(kind) for kind in pvs.WRITE},
+    return {"armed": True, "name": _session["name"], "ledger": str(_session["ledger"]), "write": _session["write"],
+            "step_scale": _session["step_scale"], "net": {kind: _net(kind) for kind in pvs.WRITE},
             "pending": [e for e in entries if e["state"] == "pending" and e["write"] not in ended]}
 
 
@@ -217,15 +231,15 @@ def _manual(proposal: int | None) -> None:
 
 
 def _check(kind: str, delta: float) -> None:
-    """Refuse a write unless armed and active in the last IDLE_S (else disarm), `delta` is at most one step, and the
-    session's net move stays within the budget."""
+    """Refuse a write unless armed and active in the last IDLE_S (else disarm), `delta` is at most one of the session's
+    steps, and the session's net move stays within its budget."""
     if _session is None:
         raise RuntimeError("not armed")
     if time.time() - _session["last"] > IDLE_S:
         disarm()
         raise RuntimeError(f"disarmed: no write in {IDLE_S:.0f} s")
-    limit = pvs.WRITE[kind]
-    if abs(delta) > limit["step"]:
+    limit = _session["write"][kind]
+    if abs(delta) > limit["step"] + 1e-9:
         raise ValueError(f"{kind} {delta:+.3f} deg is more than one step ({limit['step']} deg)")
     if abs(_net(kind) + delta) > limit["budget"] + 1e-9:
         raise ValueError(f"{kind} {delta:+.3f} deg would take the net move past the budget (+-{limit['budget']} deg)")

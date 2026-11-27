@@ -1,12 +1,13 @@
 """P1b (v2): the policy's goals, episodes and proposals, and the approved cycle. Writes only through actuate's moves, so
 arm(), the limits, the budget and the ledger apply as in W1. Each episode's proposals and decisions go in its log,
-data/<date>_V2/episode_<HHMMSS_mmm>.jsonl; goals in data/<date>_V2/goals.json.
+data/<date>_V2/episode_<HHMMSS_mmm>.jsonl. Goals are kept in data/goals.json until removed or replaced (R15).
 
 A session (v2 plan, 11-06):
   step(background, streak)      readings, as session.step(), remembered here with the writes sent around them
   record_goal("A")              the mean of the last GOAL_READINGS valid readings, with no write between them
   actuate.arm("name"), actuate.move_l1() / move_l2()   detune, inside the budget
   use_goal("A")                 an episode on the latest reading, with no history, as training's reset
+  remove_goal("A")              a goal that no longer applies
   cycle(background, streak)     step(), propose(), and when armed a y/N prompt: y applies, anything else declines
   end_episode(); actuate.undo_all() or keep; actuate.disarm()
 
@@ -29,7 +30,7 @@ import numpy as np
 
 from . import actuate, controller, pvs, session
 
-POLICY = "nc_zs_screen_noblen_jit_s0"
+POLICY = "nf_screen_full_s0"
 GOAL_READINGS = 3       # record_goal() averages this many valid readings
 EXPIRE_S = 60.0         # a proposal can be applied for this long after it is made
 MIN_L2_MOVE = 0.02      # deg: a smaller L2 change isn't written (under the multiknob's readback tolerance it would
@@ -75,8 +76,9 @@ def values(reading: session.Reading) -> dict | None:
 
 
 def record_goal(name: str) -> dict:
-    """Goal `name`: the mean of each goal feature over the last GOAL_READINGS valid readings, saved to today's
-    goals.json. Refused if there are fewer, or if a write was sent between the first and the last."""
+    """Goal `name`: the mean of each goal feature over the last GOAL_READINGS valid readings, saved in the goal store
+    (replacing a goal of that name). Refused if there are fewer, or if a write was sent between the first and the
+    last."""
     valid = [r for r in _readings if r["values"] is not None][-GOAL_READINGS:]
     if len(valid) < GOAL_READINGS:
         raise RuntimeError(f"{len(valid)} valid readings so far; a goal needs {GOAL_READINGS}")
@@ -85,34 +87,44 @@ def record_goal(name: str) -> dict:
     goal = {"time": datetime.datetime.now().isoformat(timespec="seconds"),
             "readings": [r["reading"].path for r in valid],
             **{g["key"]: float(np.mean([r["values"][g["key"]] for r in valid])) for g in policy().manifest["goals"]}}
-    path = _day() / "goals.json"
-    goals = json.loads(path.read_text()) if path.exists() else {}
-    path.write_text(json.dumps({**goals, name: goal}, indent=1) + "\n")
+    _save_goals({**_goals(), name: goal})
     return goal
 
 
-def use_goal(name: str) -> dict:
-    """Start an episode on goal `name` (today's goals.json) from the latest reading, which must be valid and taken with
-    no write since: the policy's inputs with no history, as training's reset. Manual moves are refused until
-    end_episode(); a running episode ends first. Returns the episode log's first line."""
-    global _episode, _proposal
-    path = _day() / "goals.json"
-    goals = json.loads(path.read_text()) if path.exists() else {}
+def remove_goal(name: str) -> None:
+    """Remove goal `name` from the store. A running episode keeps its own copy."""
+    goals = _goals()
     if name not in goals:
-        raise RuntimeError(f"no goal {name!r} today (goals: {sorted(goals)}): record_goal() first")
+        raise RuntimeError(f"no goal {name!r} (goals: {sorted(goals)})")
+    del goals[name]
+    _save_goals(goals)
+
+
+def use_goal(name: str) -> dict:
+    """Start an episode on goal `name` (from the goal store) from the latest reading, which must be valid and taken
+    with no write since: the policy's inputs with no history, as training's reset. Prints when the goal was recorded:
+    whether an old goal still applies is the operator's call. Manual moves are refused until end_episode(); a running
+    episode ends first. Returns the episode log's first line."""
+    global _episode, _proposal
+    goals = _goals()
+    if name not in goals:
+        raise RuntimeError(f"no goal {name!r} (goals: {sorted(goals)}): record_goal() first")
     goal = goals[name]
     latest = _latest()
     if latest["values"] is None:
         raise RuntimeError("the latest reading is invalid: an episode starts on a valid one")
     end_episode()
     now = datetime.datetime.now()
-    _episode = {"name": name, "goal": goal, "inputs": controller.Episode(policy(), goal, latest["values"]),
+    scale = _limits()[3]
+    _episode = {"name": name, "goal": goal, "inputs": controller.Episode(policy(), goal, latest["values"], scale),
                 "reading": latest, "proposed": False, "outcome": None, "n": 0,
                 "log": _day() / f"episode_{now:%H%M%S}_{now.microsecond // 1000:03d}.jsonl"}
     _proposal = None
     actuate.episode = name
+    print(f"goal {name}, recorded {goal['time']}: spacing {1e6 * goal['bunch_spacing']:.1f} um, "
+          f"drive sigma_z {1e6 * goal['drive_sigma_z']:.1f} um")
     files = [controller.POLICIES / POLICY / f for f in ("policy.json", "weights.npz")]
-    return _log({"goal": name, "goal_record": goal, "policy": POLICY,
+    return _log({"goal": name, "goal_record": goal, "step_scale": scale, "policy": POLICY,
                  "policy_sha256": hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest(),
                  "code_sha256": session.code_sha256(), "reading": latest["reading"].path})
 
@@ -129,7 +141,9 @@ def end_episode() -> None:
 def propose() -> dict | None:
     """The policy's proposal from the latest reading, logged and printed; None, with the reason, if the reading is
     invalid. A newer reading first advances the episode with the last decision's outcome (none, or not applied: action
-    and change 0). The change is clipped to the armed session's budget (unarmed: nothing has been written)."""
+    and change 0). The change is the action times the session's step, clipped to its budget (unarmed: nothing has been
+    written, pvs.WRITE's budget). Refused if the session is armed at another step setting than the episode began
+    with."""
     global _proposal
     e = _running()
     latest = _latest()
@@ -145,20 +159,24 @@ def propose() -> dict | None:
         e["inputs"].advance(action, change, latest["values"])
         e.update(reading=latest, outcome=None)
         if e["inputs"].over:
-            e["inputs"] = controller.Episode(policy(), e["goal"], latest["values"])
+            scale = e["inputs"].step_scale if e["inputs"].scaled else None
+            e["inputs"] = controller.Episode(policy(), e["goal"], latest["values"], scale)
             print(f"episode at {policy().manifest['episode_length']} steps: restarted on goal {e['name']}")
             _log({"restarted": True, "reading": latest["reading"].path})
-    p, armed = policy(), actuate.state()["armed"]
+    armed, net, budget, scale = _limits()
+    if armed and not np.allclose(scale or [1.0, 1.0], e["inputs"].step_scale):
+        raise RuntimeError(f"the episode runs at step setting {e['inputs'].step_scale.tolist()}, the session is "
+                           f"armed at {scale or [1.0, 1.0]}: use_goal() again")
     inputs = e["inputs"].inputs()
-    action = p.act(inputs)
-    net = np.array([actuate.state()["net"][k] for k in pvs.WRITE]) if armed else np.zeros(2)
-    budget = np.array([pvs.WRITE[k]["budget"] for k in pvs.WRITE])
-    change = controller.clip(action, p.manifest["action_step"], net, budget)
+    action = policy().act(inputs)
+    step = e["inputs"].step
+    change = controller.clip(action, step, net, budget)
     e["n"], e["proposed"] = e["n"] + 1, True
     _proposal = _log({"proposal": e["n"], "made": time.time(), "reading": latest["reading"].path,
                       "episode_step": e["inputs"].steps, "armed": armed, "values": latest["values"],
-                      "action": action.tolist(), "asked": (action * p.manifest["action_step"]).tolist(),
-                      "change": change.tolist(), "net": net.tolist(), "inputs": inputs.tolist(), "decision": None})
+                      "action": action.tolist(), "asked": (action * step).tolist(), "change": change.tolist(),
+                      "net": net.tolist(), "budget": budget.tolist(), "step": step.tolist(), "inputs": inputs.tolist(),
+                      "decision": None})
     print(_line(_proposal, e))
     return _proposal
 
@@ -238,6 +256,17 @@ def _undecided() -> dict:
     return _proposal
 
 
+def _limits() -> tuple[bool, np.ndarray, np.ndarray, list | None]:
+    """Armed or not, and per control the net move, the budget and the step setting (None when 1 for both). Unarmed:
+    nothing written, pvs.WRITE's budget, setting 1."""
+    st = actuate.state()
+    if not st["armed"]:
+        return False, np.zeros(2), np.array([pvs.WRITE[k]["budget"] for k in pvs.WRITE]), None
+    scale = [st["step_scale"][k] for k in pvs.WRITE]
+    return (True, np.array([st["net"][k] for k in pvs.WRITE]), np.array([st["write"][k]["budget"] for k in pvs.WRITE]),
+            None if scale == [1.0, 1.0] else scale)
+
+
 def _running() -> dict:
     if _episode is None or actuate.episode != _episode["name"]:
         raise RuntimeError("no episode running: use_goal() first")
@@ -251,6 +280,16 @@ def _latest() -> dict:
     if _readings[-1]["writes"][0] != actuate.writes:
         raise RuntimeError("a write was sent during or after the latest reading: step() again")
     return _readings[-1]
+
+
+def _goals() -> dict:
+    path = session.DATA / "goals.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _save_goals(goals: dict) -> None:
+    session.DATA.mkdir(parents=True, exist_ok=True)
+    (session.DATA / "goals.json").write_text(json.dumps(goals, indent=1) + "\n")
 
 
 def _day() -> Path:
@@ -272,7 +311,7 @@ def _line(p: dict, e: dict) -> str:
     change = ", ".join(f"{k} {c:+.3f} deg" + (f" (clipped from {a:+.3f})" if abs(c - a) > 1e-9 else "")
                        for k, c, a in zip(pvs.WRITE, p["change"], p["asked"]))
     small = " (L2 under the minimum: not written)" if 0 < abs(p["change"][1]) < MIN_L2_MOVE else ""
-    net = ", ".join(f"{k} {n:+.2f}/{pvs.WRITE[k]['budget']}" for k, n in zip(pvs.WRITE, p["net"]))
+    net = ", ".join(f"{k} {n:+.2f}/{b}" for k, n, b in zip(pvs.WRITE, p["net"], p["budget"]))
     return (f"proposal {p['proposal']} (episode step {p['episode_step']}, goal {e['name']}): "
             f"spacing {1e6 * v['bunch_spacing']:.1f} um (goal {1e6 * g['bunch_spacing']:.1f}), "
             f"drive sigma_z {1e6 * v['drive_sigma_z']:.1f} um (goal {1e6 * g['drive_sigma_z']:.1f}) | "

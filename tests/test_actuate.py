@@ -86,6 +86,38 @@ def test_moves(armed):
 
 
 @needs_daq
+def test_session_settings(fresh):
+    """arm() takes the session's budget and step setting: the largest write is the 1x step times the setting, the net
+    move stays within the budget, and both are in the ledger's first line. A setting outside pvs.STEP_SCALE, or an
+    unknown kind, is refused. A session armed smaller can't undo a larger one's writes, and says how large to arm."""
+    with pytest.raises(ValueError, match="outside"):
+        actuate.arm("test", step_scale={"L2": 1.6})
+    with pytest.raises(ValueError, match="kinds"):
+        actuate.arm("test", budget={"l1": 1.0})
+    first = actuate.arm("test", budget={"L1": 0.5}, step_scale={"L2": 1.5})
+    assert first["write"] == {"L1": {"step": 0.25, "budget": 0.5}, "L2": {"step": pytest.approx(0.45), "budget": 1.5}}
+    assert first["step_scale"] == {"L1": 1.0, "L2": 1.5} and actuate.state()["write"] == first["write"]
+    actuate.move_l2(0.45)
+    with pytest.raises(ValueError, match="one step"):
+        actuate.move_l2(0.46)
+    actuate.move_l1(0.25)
+    actuate.move_l1(0.25)
+    with pytest.raises(ValueError, match="budget"):
+        actuate.move_l1(0.01)
+    ledger = Path(actuate.state()["ledger"])
+    actuate._session = None                     # the session dies; a new one at the default limits takes over
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    actuate.lock_path().write_text(json.dumps({**json.loads(actuate.lock_path().read_text()), "pid": dead.pid}))
+    actuate.arm("undo")
+    with pytest.raises(ValueError, match="arm with at least its limits"):
+        actuate.undo_all(ledger)                # the two L1 writes reversed, then L2's 0.45 is over 0.3
+    actuate.disarm()
+    actuate.arm("undo", step_scale={"L2": 1.5})
+    assert len(actuate.undo_all(ledger)) == 1
+
+
+@needs_daq
 def test_refusals(armed, monkeypatch):
     start, ledger, _ = armed
     with pytest.raises(ValueError, match="one step"):
@@ -192,7 +224,8 @@ def test_one_multiknob_connection_per_session(armed, monkeypatch):
 def test_staircase(armed, monkeypatch):
     """W2's staircase on L1 with a 0.5 deg budget: two steps up, the third refused, two back down."""
     start, ledger, _ = armed
-    monkeypatch.setitem(pvs.WRITE, "L1", {"step": 0.25, "budget": 0.5})
+    actuate.disarm()
+    actuate.arm("test", budget={"L1": 0.5})
     summary = session.staircase("L1", 0.25, 2, hold_s=0.5)
     assert "budget" in summary["refused"]
     assert [m["delta"] for m in summary["moves"]] == [0.25, 0.25, -0.25, -0.25]

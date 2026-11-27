@@ -60,7 +60,23 @@ def test_goal_is_the_mean_of_three_valid_readings(monkeypatch):
     goal = advise.record_goal("A")
     assert goal["bunch_spacing"] == pytest.approx(152e-6) and goal["drive_sigma_z"] == pytest.approx(42e-6)
     assert goal["readings"] == [r["reading"].path for r in advise._readings if r["values"]]
-    assert json.loads((advise._day() / "goals.json").read_text()) == {"A": goal}
+    assert json.loads((session.DATA / "goals.json").read_text()) == {"A": goal}
+
+
+def test_goals_kept_until_removed_or_replaced(monkeypatch, tmp_path):
+    """The goal store outlives the day: a goal recorded today is used tomorrow (its episode log in tomorrow's folder);
+    recording under its name replaces it; once removed, use_goal() refuses with the goals left."""
+    goal = start(monkeypatch, fake(160.0))
+    monkeypatch.setattr(advise, "_day", lambda: tmp_path)                   # the next day's folder
+    advise.step(None, 1100.0)
+    advise.use_goal("A")
+    assert advise._episode["goal"] == goal and advise._episode["log"].parent == tmp_path
+    replaced = advise.record_goal("A")                                       # the last three: 152, 154, 160 um
+    assert replaced["bunch_spacing"] == pytest.approx(155.333e-6, abs=1e-9) and list(advise._goals()) == ["A"]
+    advise.remove_goal("A")
+    assert advise._episode["goal"] == goal                                   # the running episode keeps its copy
+    with pytest.raises(RuntimeError, match="no goal 'A' \\(goals: \\[\\]\\)"):
+        advise.use_goal("A")
 
 
 def test_goal_refused_with_a_write_between(monkeypatch):
@@ -173,6 +189,26 @@ def test_apply_writes_through_actuate(armed, monkeypatch):     # noqa: F811
 
 
 @needs_daq
+def test_proposals_use_the_session_settings(fresh, monkeypatch):     # noqa: F811
+    """Armed with a step setting and a budget: the episode's inputs end with the setting, the change is the action times
+    the session's step, clipped to its budget. Armed again at another setting, the episode refuses to propose."""
+    actuate.arm("test", budget={"L1": 0.2}, step_scale={"L1": 0.5, "L2": 0.5})
+    start(monkeypatch, fake(), fake(), fake())
+    monkeypatch.setattr(advise.policy(), "act", lambda inputs: np.array([1.0, -1.0]))
+    p = advise.propose()
+    assert p["step"] == pytest.approx([0.125, 0.15]) and p["change"] == pytest.approx([0.125, -0.15])
+    assert p["budget"] == [0.2, 1.5] and p["inputs"][-2:] == [0.5, 0.5]
+    advise.apply()
+    advise.step(None, 1100.0)
+    assert advise.propose()["change"] == pytest.approx([0.075, -0.15])         # 0.2 - 0.125 left on L1
+    actuate.disarm()
+    actuate.arm("test")
+    advise.step(None, 1100.0)
+    with pytest.raises(RuntimeError, match="use_goal"):
+        advise.propose()
+
+
+@needs_daq
 def test_small_l2_changes_and_the_budget(armed, monkeypatch):     # noqa: F811
     """L1 at full scale reaches the budget after 4 writes, then is clipped to 0 and not written; an L2 change of
     0.015 deg is never written. Both count as what the beam got."""
@@ -242,7 +278,7 @@ def test_propose_from_a_real_step(replay, monkeypatch):
     values = advise._readings[-1]["values"]
     assert values["bunch_spacing"] == pytest.approx(1e-6 * reading.record["reading"]["spacing_um"])
     goal = {"bunch_spacing": values["bunch_spacing"] + 10e-6, "drive_sigma_z": values["drive_sigma_z"]}
-    (advise._day() / "goals.json").write_text(json.dumps({"A": goal}))
+    (session.DATA / "goals.json").write_text(json.dumps({"A": {"time": "now", **goal}}))
     advise.use_goal("A")
     p = advise.propose()
     expected = advise.policy().act(controller.Episode(advise.policy(), goal, values).inputs())

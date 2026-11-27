@@ -167,9 +167,11 @@ L1_SETPOINTS = ["KLYS:LI11:11:PREQ", "KLYS:LI11:21:PREQ"]
 MULTIKNOB_SERVICE = "MKB:VAL"
 MULTIKNOB = "l2_phase"                  # its name as ops pass it to the wrapper, which sends it as is (Zack, 11-06)
 MULTIKNOB_MOVES = ["LI12:SBST:1:PDES", "LI13:SBST:1:PDES", "LI14:SBST:1:PDES"]
-# Per kind: the largest single write (one policy action, deg) and the net move allowed per armed session (deg; the
-# first sessions', 11-06 plan)
+# Per kind: the largest single write at a step setting of 1 (one policy action, deg) and the default net move allowed
+# per armed session (deg; the first sessions', 11-06 plan). arm() takes the session's budget and step setting: the
+# largest write is then the step here times the setting, which stays within STEP_SCALE (the trained range; 11-26).
 WRITE = {"L1": {"step": 0.25, "budget": 1.0}, "L2": {"step": 0.3, "budget": 1.5}}
+STEP_SCALE = (0.3, 1.5)
 
 # PV name -> what it is and the stage that added it
 READ: dict[str, str] = {
