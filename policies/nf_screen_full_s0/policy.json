@@ -1,0 +1,209 @@
+{
+ "name": "nf_screen_full_s0",
+ "source": {
+  "logdir": "logs/2026-11-25/wave1/nf_screen_full_s0",
+  "checkpoint": "final_policy.pt",
+  "checkpoint_sha256": "dbbf48580822f797f778265bed7bc4bc7f63e566f81bb04b95c0b174e31d64f1",
+  "run_git_hash": "77fdff9e5d331445f8948649f5dcd944f61fde59",
+  "run_git_dirty": true
+ },
+ "exported": {
+  "time": "2026-11-26T05:26:53-08:00",
+  "exporter_git_hash": "6505d1d580f8d89d0b85bda4050ac8c1c9236309",
+  "torch": "2.11.0+cu130"
+ },
+ "controls": [
+  "L1PhaseSet",
+  "L2PhaseSet"
+ ],
+ "action_step": [
+  0.25,
+  0.3
+ ],
+ "actuators": [
+  "direct",
+  "direct"
+ ],
+ "blocks": [
+  {
+   "name": "cumulative_change",
+   "size": 2
+  },
+  {
+   "name": "features",
+   "size": 4
+  },
+  {
+   "name": "goal_error",
+   "size": 2
+  },
+  {
+   "name": "error_trend",
+   "size": 2
+  },
+  {
+   "name": "last_action",
+   "size": 2
+  },
+  {
+   "name": "gain_estimate",
+   "size": 2
+  },
+  {
+   "name": "history",
+   "size": 90
+  },
+  {
+   "name": "step_scale",
+   "size": 2
+  }
+ ],
+ "inputs": 106,
+ "features": [
+  {
+   "key": "bunch_spacing",
+   "transform": "identity",
+   "mean": 0.00016420458981528937,
+   "std": 0.00023174012377432637
+  },
+  {
+   "key": "drive_sigma_z",
+   "transform": "log10",
+   "mean": -4.120401899220428,
+   "std": 0.30927800879957335
+  },
+  {
+   "key": "spacing_goal",
+   "transform": "identity",
+   "mean": 0.00016420458981528937,
+   "std": 0.00023174012377432637
+  },
+  {
+   "key": "drive_sigma_z_goal",
+   "transform": "log10",
+   "mean": -4.120401899220428,
+   "std": 0.30927800879957335
+  }
+ ],
+ "goals": [
+  {
+   "key": "bunch_spacing",
+   "goal_key": "spacing_goal",
+   "transform": "identity",
+   "scale": 1e-05
+  },
+  {
+   "key": "drive_sigma_z",
+   "goal_key": "drive_sigma_z_goal",
+   "transform": "log10",
+   "scale": 0.0414
+  }
+ ],
+ "history": 16,
+ "episode_length": 128,
+ "network": [
+  {
+   "type": "linear",
+   "weight": "w0",
+   "bias": "b0"
+  },
+  {
+   "type": "elu"
+  },
+  {
+   "type": "layernorm",
+   "weight": "w2",
+   "bias": "b2",
+   "eps": 1e-05
+  },
+  {
+   "type": "linear",
+   "weight": "w3",
+   "bias": "b3"
+  },
+  {
+   "type": "elu"
+  },
+  {
+   "type": "layernorm",
+   "weight": "w5",
+   "bias": "b5",
+   "eps": 1e-05
+  },
+  {
+   "type": "linear",
+   "weight": "w6",
+   "bias": "b6"
+  },
+  {
+   "type": "tanh"
+  }
+ ],
+ "envelope": {
+  "step_period_s": [
+   20.0,
+   45.0
+  ],
+  "kept_frames_per_polarity": [
+   15,
+   35
+  ],
+  "budget_deg": {
+   "L1PhaseSet": [
+    1.0,
+    3.0
+   ],
+   "L2PhaseSet": [
+    1.5,
+    4.0
+   ]
+  },
+  "step_scale": {
+   "L1PhaseSet": [
+    0.3,
+    1.5
+   ],
+   "L2PhaseSet": [
+    0.3,
+    1.5
+   ]
+  },
+  "spacing_goal_m": [
+   0.0001,
+   0.0004
+  ],
+  "drive_sigma_z_goal_m": [
+   6.676418706774712e-05,
+   0.00018434012599755079
+  ],
+  "tcav_MV": [
+   18.0,
+   32.0
+  ],
+  "streak_calibration_error": 0.1,
+  "ff_quad_fraction": {
+   "Q5FF": 0.15,
+   "Q4FF": 0.15,
+   "Q3FF": 0.15,
+   "Q2FF": 0.15,
+   "Q1FF": 0.05,
+   "Q0FF": 0.15
+  },
+  "sextupole_fraction": 0.35000798434351493,
+  "mover_mm": 0.75,
+  "charge_nC": [
+   1.6,
+   2.2
+  ],
+  "delay_ps": [
+   7.0,
+   10.0
+  ],
+  "feedbacks": {
+   "PREQ (BC11 bunch length)": "off",
+   "LI12-14 bunch-length trim": "off",
+   "energy": "on"
+  },
+  "witness": "trailing"
+ }
+}

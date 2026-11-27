@@ -1,11 +1,11 @@
-"""P1: the policy and its inputs, built as its training env built them (twobunch-s2e-rl, DeltaControlEnvV4). numpy
-only; no PV access.
+"""P1: the policy and its inputs, built as its training env built them (twobunch-s2e-rl, DeltaControlEnvV4 and V5).
+numpy only; no PV access.
 
 A policy is exported by twobunch-s2e-rl's deploy_export to policies/<name>/: policy.json (the manifest: the input
 layout, its normalisers and the action steps), weights.npz, and the reference data the tests check this module
 against.
 
-The inputs, in the manifest's order (106 for the incumbent):
+The inputs, in the manifest's order (106 for nf_screen_full_s0: 4 features, and the step setting last):
 - cumulative change: each control's observed change since the episode began (deg);
 - features: the reading's and the goals', each transformed and z-scored as in training;
 - goal error: per goal, (t(reading) - t(goal)) / scale, t the goal's transform;
@@ -27,7 +27,8 @@ import numpy as np
 POLICIES = Path(__file__).resolve().parents[1] / "policies"
 BLOCKS = ["cumulative_change", "features", "goal_error", "error_trend", "last_action", "gain_estimate", "history"]
 STEP_SCALE = "step_scale"           # an optional last block
-READING = ("bunch_spacing", "drive_sigma_z", "drive_charge_fraction", "screen_valid_deployed")
+READING = ("bunch_spacing", "drive_sigma_z", "drive_charge_fraction", "screen_valid_deployed")   # the exporter's columns;
+                                                    # a policy takes the ones its features name
 
 
 def transform(value: float, name: str) -> float:

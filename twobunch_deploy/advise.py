@@ -29,7 +29,7 @@ import numpy as np
 
 from . import actuate, controller, pvs, session
 
-POLICY = "nc_zs_screen_noblen_jit_s0"
+POLICY = "nf_screen_full_s0"
 GOAL_READINGS = 3       # record_goal() averages this many valid readings
 EXPIRE_S = 60.0         # a proposal can be applied for this long after it is made
 MIN_L2_MOVE = 0.02      # deg: a smaller L2 change isn't written (under the multiknob's readback tolerance it would
