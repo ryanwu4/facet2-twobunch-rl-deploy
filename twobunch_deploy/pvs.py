@@ -119,7 +119,7 @@ MAGNETS = {
     "LI20:LGPS:3141:BACT": "Q0D supply, kG",
     "LI20:LGPS:3261:BACT": "Q1D supply, kG",
     "LI20:LGPS:3091:BACT": "Q2D supply, kG",
-    "LI20:LGPS:3330:BACT": "B5D36 supply, GeV/c",
+    "LI20:LGPS:3330:BACT": "B5D36 supply (about 10.0; its IOC's unit is Kgauss, twobunch-s2e-rl reads it as GeV/c)",
     "LI20:XCOR:3026:BACT": "XC1FF corrector",
     "LI20:XCOR:3086:BACT": "XC3FF corrector",
     "LI20:YCOR:3017:BACT": "YC1FF corrector",

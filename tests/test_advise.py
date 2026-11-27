@@ -27,9 +27,11 @@ def clean(tmp_path, monkeypatch):
     advise.end_episode()
 
 
-def fake(spacing_um=150.0, sigma_z_um=40.0, valid=True):
-    """A stand-in step() reading."""
-    record = {"valid": valid, "checks": {"|spacing| > 60 um": valid, "+ frames >= 15": True},
+def fake(spacing_um=150.0, sigma_z_um=40.0, valid=True, failed="|spacing| > 60 um"):
+    """A stand-in step() reading; if not valid, the check `failed` fails (a beam-state one by default)."""
+    checks = {"|spacing| > 60 um": True, "+ frames >= 15": True}
+    checks[failed] = valid
+    record = {"valid": valid, "checks": checks,
               "reading": {"spacing_um": spacing_um, "drive_sigma_z_um": sigma_z_um, "drive_charge_fraction": 0.7}}
     return session.Reading(record, f"step_{next(COUNT)}.json", {}, [])
 
@@ -112,7 +114,60 @@ def test_shadow_episode_follows_training_bookkeeping(monkeypatch):
         np.testing.assert_array_equal(p["inputs"], reference.inputs())
     assert p["episode_step"] == 2 and p["proposal"] == 3
     log = [json.loads(line) for line in advise._episode["log"].read_text().splitlines()]
-    assert log[0]["goal"] == "A" and log[0]["policy"] == advise.POLICY and len(log) == 4
+    assert log[0]["goal"] == "A" and log[0]["policy"] == advise.POLICY and len(log) == 5        # 3 proposals, 1 hold
+    assert log[2]["failed"] == ["|spacing| > 60 um"] and log[2]["beam_state"]
+
+
+def test_reversed_bunches_are_held(monkeypatch, capsys):
+    """A valid reading with negative spacing (the witness ahead, or a wrong streak sign) is held as a beam-state fault
+    and doesn't count for a goal (R4)."""
+    start(monkeypatch, fake(-150.0))
+    advise.step(None, 1100.0)
+    assert advise.checks(advise._readings[-1]["reading"])["witness trailing"] is False
+    assert advise.values(advise._readings[-1]["reading"]) is None
+    assert advise.propose() is None and "beam state (witness trailing)" in capsys.readouterr().out
+    assert advise.record_goal("B")["bunch_spacing"] == pytest.approx(152e-6)            # the three before it
+
+
+def test_alert_after_beam_state_holds(monkeypatch, capsys):
+    """Holds with a beam-state fault count towards the alert; acquisition faults neither count nor reset it; a valid
+    reading resets it. The alert prints once, at ALERT_HOLDS, and is logged with the net move (R3)."""
+    start(monkeypatch, fake(valid=False), fake(valid=False, failed="+ frames >= 15"), fake(valid=False),
+          fake(valid=False), fake(valid=False), fake(), fake(valid=False))
+    advise.propose()
+    counts = []
+    for _ in range(5):
+        advise.step(None, 1100.0)
+        assert advise.propose() is None
+        counts.append(advise.state()["beam_holds"])
+    assert counts == [1, 1, 2, 3, 4] and capsys.readouterr().out.count("ALERT") == 1
+    advise.step(None, 1100.0)
+    assert advise.propose() is not None and advise.state()["beam_holds"] == 0
+    advise.step(None, 1100.0)
+    advise.propose()
+    assert advise.state()["beam_holds"] == 1
+    log = [json.loads(line) for line in advise._episode["log"].read_text().splitlines()]
+    assert sum("alert" in e for e in log) == 1 and sum("held" in e for e in log) == 6
+
+
+def test_goal_outside_training_is_recorded_with_a_warning(monkeypatch, capsys):
+    feed(monkeypatch, fake(80.0, 100.0), fake(80.0, 100.0), fake(80.0, 100.0))
+    for _ in range(3):
+        advise.step(None, 1100.0)
+    goal = advise.record_goal("A")
+    assert goal["outside_training"] == ["bunch_spacing 80.0 um is outside the trained 100.0-400.0 um, by 20.0 um"]
+    assert "warning: goal A" in capsys.readouterr().out and advise._goals()["A"] == goal
+
+
+def test_period_is_logged_and_flagged(monkeypatch, capsys):
+    """Each proposal logs the time since the reading the episode last advanced on, flagged over the trained 45 s (R9)."""
+    start(monkeypatch, fake())
+    first = advise.propose()
+    advise.step(None, 1100.0)
+    advise._readings[-1]["began"] = advise._readings[2]["began"] + 50.0
+    p = advise.propose()
+    assert first["period_s"] is None and p["period_s"] == pytest.approx(50.0)
+    assert "period 50 s (over the trained 45 s)" in capsys.readouterr().out
 
 
 def test_episode_restarts_after_its_length(monkeypatch):

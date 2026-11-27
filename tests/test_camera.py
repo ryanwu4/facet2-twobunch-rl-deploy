@@ -45,3 +45,14 @@ def test_capture_test(replay, tmp_path, monkeypatch):
     for pulse_id, frame in zip(saved["saved_pulse_id"], saved["saved_data"]):
         assert np.array_equal(frame, data[frame_ids.index(pulse_id)])
     assert len(saved["saved_data"]) == 10
+
+
+def test_capture_fraction_at_any_beam_rate(tmp_path, monkeypatch):
+    """The capture fraction counts frames against the beam rate's pulse-ID step (the commonest), not 10 Hz's: 5 Hz with
+    one frame missed reads 9 of 10 (R11; on 11-05 it read 0.505 at 5 Hz with none lost)."""
+    monkeypatch.setattr(session, "DATA", tmp_path)
+    ids = [72 * i for i in range(10) if i != 4]
+    frames = [machine.Frame(p, 0.2 * i, 0.2 * i, np.zeros(4, "int16")) for i, p in enumerate(ids)]
+    monkeypatch.setattr(machine, "frames", lambda seconds: frames)
+    summary = session.capture_test(seconds=2, n_saved=2)
+    assert summary["pulse_ids_per_frame"] == 72 and summary["capture_fraction"] == 0.9

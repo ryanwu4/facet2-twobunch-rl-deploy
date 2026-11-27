@@ -149,7 +149,8 @@ def step(record: dict, medians: dict, updates: list):
     blen = fig.add_subplot(grid[5, :])
     for ax, sign in zip(images, ("+", "-")):
         p = record["polarity"][sign]
-        ax.set_title(f"{sign}V: median of {p['kept']} kept frames ({p['dropped']} dropped)", fontsize=9)
+        ax.set_title(f"{sign}V: median of {p.get('frames', p['kept'])} kept frames ({p['kept']} with band "
+                     f"statistics, {p['dropped']} dropped)", fontsize=9)
         ax.set_xlabel("x (mm)")
         ax.set_ylabel(f"row (the padding from {screen.PIXEL_ROWS} not shown)")
         if sign not in medians:

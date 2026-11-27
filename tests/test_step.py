@@ -143,6 +143,21 @@ def test_read_step():
     assert [k for k, ok in r.checks.items() if not ok] == list(r.checks)[:2] + ["step cut"] + list(r.checks)[4:]
 
 
+def test_read_step_cut_polarity():
+    """The energy cut from the - frames (R13): with the + frames' bands 10 rows lower, the default cut follows the +
+    frames and cut_polarity="-" the - frames; both polarities' statistics use the cut taken."""
+    tags = ["off"] * 2 + ["+"] * 16 + ["-"] * 16
+    crops, tags, drop, background = frames_for(tags)
+    crops[2:18] = np.rint(background + 50 * np.roll(two_bands(80), 10, axis=0)).astype("int16")
+    plus = screen.read_step(crops, tags, drop, background, X, 1100.0)
+    minus = screen.read_step(crops, tags, drop, background, X, 1100.0, cut_polarity="-")
+    corrected = [screen.shift_rows(screen.process(crop, background), minus.reference.shifts) for crop in crops]
+    cut = {sign: screen.step_cut([f for f, t in zip(corrected, tags) if t == sign]) for sign in "+-"}
+    assert plus.cut == cut["+"] and minus.cut == cut["-"] and plus.cut != minus.cut
+    assert minus.stats[2] == screen.band_stats(corrected[2], X, minus.cut)
+    assert minus.stats[20] == screen.band_stats(corrected[20], X, minus.cut)
+
+
 def test_step_figure():
     tags = ["off"] * 2 + ["+"] * 16 + ["neither"] + ["-"] * 16 + ["unmatched"]
     crops, tags, drop, background = frames_for(tags)
@@ -333,17 +348,18 @@ def test_step(replay, tmp_path, monkeypatch):
     assert 0.0 in constants.values()                              # LI11:SBST:1:PDES, 0 in the DAQ
     for name, value in constants.items():                         # S6, S7: one update each, on subscribing
         assert r.record["phases"][name] == {"updates": 1, "median": value, "first": value, "last": value,
-                                            "zeros": int(value == 0), "nans": 0}
+                                            "zeros": int(value == 0), "nans": 0, "sentinels": 0}
     for name in next(iter(per_shot.values())):                    # one per frame with a shot
         values = [per_shot[p][name] for p in frame_ids if p in per_shot]
         finite = [v for v in values if np.isfinite(v)]
         kind = "drift" if name in pvs.BLEN else "phases"
         assert r.record[kind][name] == {"updates": len(values), "median": np.median(finite),
                                         "first": acquire.number(values[0]), "last": acquire.number(values[-1]),
-                                        "zeros": values.count(0), "nans": len(values) - len(finite)}
+                                        "zeros": values.count(0), "nans": len(values) - len(finite),
+                                        "sentinels": 0}
     for name, value in DRIFT_STAND_IN.items():                   # S8: one update each, on subscribing
         assert r.record["drift"][name] == {"updates": 1, "median": value, "first": value, "last": value, "zeros": 0,
-                                           "nans": 0}
+                                           "nans": 0, "sentinels": 0}
     assert r.record["magnets"] == magnet_values()
     assert len(frames["timestamp"]) == len(frame_ids) and np.all(np.diff(frames["timestamp"]) > 0)
     np.testing.assert_equal(json.loads(Path(r.path).read_text()), json.loads(json.dumps(r.record)))

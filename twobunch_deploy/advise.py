@@ -15,8 +15,12 @@ Unarmed, cycle() is shadow mode: proposals are logged and nothing is written. Th
 bookkeeping (controller.py): a declined, expired, unanswered or shadow proposal is "asked for nothing, got nothing"
 (action and observed change 0); an applied one is the policy's action and the change written (L1: the PREQ change;
 L2: the multiknob delta, not written below MIN_L2_MOVE and then 0). A proposal is clipped to the session's budget, as
-training's knob window clipped actions. An invalid reading gets no proposal and the episode doesn't advance. After the
-policy's episode length the episode restarts on the same goal.
+training's knob window clipped actions. An invalid reading gets no proposal and the episode doesn't advance (a hold).
+A reading with the witness ahead of the drive (negative spacing) is held too: the policy was trained only with it
+trailing (R4). After ALERT_HOLDS holds in a row with a beam-state fault (the beam itself unreadable, not the
+acquisition) it alerts, and the operator decides; nothing is undone (R3). Goals outside the policy's trained ranges are
+recorded with a warning (R5). Each proposal logs the time since the reading the episode last advanced on (R9). After
+the policy's episode length the episode restarts on the same goal.
 """
 from __future__ import annotations
 
@@ -36,6 +40,9 @@ EXPIRE_S = 60.0         # a proposal can be applied for this long after it is ma
 MIN_L2_MOVE = 0.02      # deg: a smaller L2 change isn't written (under the multiknob's readback tolerance it would
                         # look "not applied" and disarm)
 KINDS = {"L1PhaseSet": "L1", "L2PhaseSet": "L2"}
+ALERT_HOLDS = 3         # holds in a row with a beam-state fault before the alert (R3)
+BEAM_STATE = ("step cut", "|spacing|", "edge fraction", "witness trailing")   # checks that say the beam itself is
+                        # unreadable; the others (frames, row-correction reference, intensity) are acquisition faults
 
 _policy: controller.Policy | None = None
 _readings: list[dict] = []          # this kernel's step()s: the Reading, its features (None if invalid), the writes
@@ -57,20 +64,27 @@ def policy() -> controller.Policy:
     return _policy
 
 
-def step(background, streak_um_per_deg: float, seconds: float = 15) -> session.Reading:
-    """session.step(), remembered for record_goal() and propose() with the writes sent before and after it."""
-    before = actuate.writes
-    reading = session.step(background, streak_um_per_deg, seconds)
-    _readings.append({"reading": reading, "values": values(reading), "writes": (before, actuate.writes)})
+def step(background, streak_um_per_deg: float, seconds: float = 15, cut_polarity: str = "+") -> session.Reading:
+    """session.step(), remembered for record_goal() and propose() with when it began and the writes sent before and
+    after it."""
+    before, began = actuate.writes, time.time()
+    reading = session.step(background, streak_um_per_deg, seconds, cut_polarity=cut_polarity)
+    _readings.append({"reading": reading, "values": values(reading), "writes": (before, actuate.writes),
+                      "began": began})
     return reading
 
 
-def values(reading: session.Reading) -> dict | None:
-    """A valid reading's features as the policy takes them (m); None if the reading is invalid."""
+def checks(reading: session.Reading) -> dict:
+    """The reading's checks (session.step's), and the witness trailing (spacing > 0) when there is a reading (R4)."""
     r = reading.record
-    if not r["valid"]:
+    return {**r["checks"], **({"witness trailing": r["reading"]["spacing_um"] > 0} if r["reading"] else {})}
+
+
+def values(reading: session.Reading) -> dict | None:
+    """A valid reading's features as the policy takes them (m); None if any check fails (checks())."""
+    if not all(checks(reading).values()):
         return None
-    read = r["reading"]
+    read = reading.record["reading"]
     return {"bunch_spacing": 1e-6 * read["spacing_um"], "drive_sigma_z": 1e-6 * read["drive_sigma_z_um"],
             "drive_charge_fraction": read["drive_charge_fraction"], "screen_valid_deployed": 1.0}
 
@@ -87,6 +101,9 @@ def record_goal(name: str) -> dict:
     goal = {"time": datetime.datetime.now().isoformat(timespec="seconds"),
             "readings": [r["reading"].path for r in valid],
             **{g["key"]: float(np.mean([r["values"][g["key"]] for r in valid])) for g in policy().manifest["goals"]}}
+    goal["outside_training"] = _outside(goal)
+    for line in goal["outside_training"]:
+        print(f"warning: goal {name}: {line}; recorded, the operator decides")
     _save_goals({**_goals(), name: goal})
     return goal
 
@@ -117,7 +134,7 @@ def use_goal(name: str) -> dict:
     now = datetime.datetime.now()
     scale = _limits()[3]
     _episode = {"name": name, "goal": goal, "inputs": controller.Episode(policy(), goal, latest["values"], scale),
-                "reading": latest, "proposed": False, "outcome": None, "n": 0,
+                "reading": latest, "proposed": False, "outcome": None, "n": 0, "beam_holds": 0,
                 "log": _day() / f"episode_{now:%H%M%S}_{now.microsecond // 1000:03d}.jsonl"}
     _proposal = None
     actuate.episode = name
@@ -148,13 +165,14 @@ def propose() -> dict | None:
     e = _running()
     latest = _latest()
     if latest["values"] is None:
-        failed = [check for check, ok in latest["reading"].record["checks"].items() if not ok]
-        print(f"hold: invalid reading ({'; '.join(failed)}): no proposal, the episode doesn't advance")
-        return None
+        return _hold(e, latest)
+    e["beam_holds"] = 0
+    period = None                       # since the reading the episode last advanced on (R9)
     if latest is e["reading"]:
         if e["proposed"]:
             raise RuntimeError("already proposed on this reading: step() first")
     else:
+        period = latest["began"] - e["reading"]["began"]
         action, change = e["outcome"] or (np.zeros(2), np.zeros(2))
         e["inputs"].advance(action, change, latest["values"])
         e.update(reading=latest, outcome=None)
@@ -175,8 +193,8 @@ def propose() -> dict | None:
     _proposal = _log({"proposal": e["n"], "made": time.time(), "reading": latest["reading"].path,
                       "episode_step": e["inputs"].steps, "armed": armed, "values": latest["values"],
                       "action": action.tolist(), "asked": (action * step).tolist(), "change": change.tolist(),
-                      "net": net.tolist(), "budget": budget.tolist(), "step": step.tolist(), "inputs": inputs.tolist(),
-                      "decision": None})
+                      "net": net.tolist(), "budget": budget.tolist(), "step": step.tolist(), "period_s": period,
+                      "inputs": inputs.tolist(), "decision": None})
     print(_line(_proposal, e))
     return _proposal
 
@@ -211,11 +229,11 @@ def decline() -> dict:
     return _decide(_undecided(), "declined", np.zeros(2))
 
 
-def cycle(background, streak_um_per_deg: float, seconds: float = 15) -> dict | None:
+def cycle(background, streak_um_per_deg: float, seconds: float = 15, cut_polarity: str = "+") -> dict | None:
     """One cycle: step(), propose(), then, if armed, `apply? [y/N]`: y applies the proposal, anything else declines
     it; an answer after EXPIRE_S declines it as expired. Unarmed (shadow mode) nothing is asked or written. Returns
     the proposal, or None if the reading was invalid."""
-    step(background, streak_um_per_deg, seconds)
+    step(background, streak_um_per_deg, seconds, cut_polarity)
     p = propose()
     if p is None or not p["armed"]:
         return p
@@ -231,8 +249,41 @@ def state() -> dict:
     if _episode is None:
         return {"episode": None}
     return {"episode": _episode["name"], "log": str(_episode["log"]), "step": _episode["inputs"].steps,
-            "proposals": _episode["n"], "latest": None if _proposal is None else
+            "proposals": _episode["n"], "beam_holds": _episode["beam_holds"], "latest": None if _proposal is None else
             {k: _proposal[k] for k in ("proposal", "change", "decision")}}
+
+
+def _hold(e: dict, latest: dict) -> None:
+    """A held reading: no proposal, and the episode doesn't advance. Logged with its failed checks; one that says the
+    beam itself is unreadable counts towards the alert (a valid reading resets the count), at ALERT_HOLDS (R3)."""
+    failed = [check for check, ok in checks(latest["reading"]).items() if not ok]
+    beam = [check for check in failed if check.startswith(BEAM_STATE)]
+    e["beam_holds"] += bool(beam)
+    _log({"held": latest["reading"].path, "failed": failed, "beam_state": bool(beam), "beam_holds": e["beam_holds"]})
+    print(f"hold, {'beam state' if beam else 'acquisition'} ({'; '.join(failed)}): no proposal, the episode doesn't "
+          "advance" + ("; take another step" if not beam else f" ({e['beam_holds']} in a row)"))
+    if beam and e["beam_holds"] == ALERT_HOLDS:
+        last, state = actuate.last_write(), actuate.state()
+        written = "none" if last is None else f"{last['kind']} {last['delta']:+.3f} deg at {last['time']}"
+        print(f"ALERT: {ALERT_HOLDS} readings in a row with the beam unreadable: operator decision needed (wait, "
+              f"end_episode() and move by hand, or undo_all()). Last write: {written}; net move: {state.get('net')}. "
+              "Nothing is proposed or written.")
+        _log({"alert": failed, "last_write": last, "net": state.get("net")})
+    return None
+
+
+def _outside(goal: dict) -> list[str]:
+    """Where the goal lies outside the policy's trained goal ranges (its envelope), and by how much (R5)."""
+    envelope = policy().manifest.get("envelope", {})
+    out = []
+    for key, span in (("bunch_spacing", "spacing_goal_m"), ("drive_sigma_z", "drive_sigma_z_goal_m")):
+        if span in envelope:
+            lo, hi = envelope[span]
+            if not lo <= goal[key] <= hi:
+                off = lo - goal[key] if goal[key] < lo else goal[key] - hi
+                out.append(f"{key} {1e6 * goal[key]:.1f} um is outside the trained {1e6 * lo:.1f}-{1e6 * hi:.1f} um, "
+                           f"by {1e6 * off:.1f} um")
+    return out
 
 
 def _decide(p: dict, decision: str, got: np.ndarray) -> dict:
@@ -312,7 +363,10 @@ def _line(p: dict, e: dict) -> str:
                        for k, c, a in zip(pvs.WRITE, p["change"], p["asked"]))
     small = " (L2 under the minimum: not written)" if 0 < abs(p["change"][1]) < MIN_L2_MOVE else ""
     net = ", ".join(f"{k} {n:+.2f}/{b}" for k, n, b in zip(pvs.WRITE, p["net"], p["budget"]))
+    longest = policy().manifest.get("envelope", {}).get("step_period_s", [None, float("inf")])[1]
+    period = "" if p["period_s"] is None else f" | period {p['period_s']:.0f} s" + (
+        f" (over the trained {longest:.0f} s)" if p["period_s"] > longest else "")
     return (f"proposal {p['proposal']} (episode step {p['episode_step']}, goal {e['name']}): "
             f"spacing {1e6 * v['bunch_spacing']:.1f} um (goal {1e6 * g['bunch_spacing']:.1f}), "
             f"drive sigma_z {1e6 * v['drive_sigma_z']:.1f} um (goal {1e6 * g['drive_sigma_z']:.1f}) | "
-            f"{change}{small} | net {net}" + ("" if p["armed"] else " | shadow: not written"))
+            f"{change}{small} | net {net}{period}" + ("" if p["armed"] else " | shadow: not written"))
